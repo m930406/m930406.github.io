@@ -56,6 +56,11 @@ const COST = {
   alertAck: 15,          // 告警響了幾分鐘內要到機房
   coffee: 5, lunch: 20, wc: 5,   // 便當在座位上吃
   extTalk: 3, extRing: 3,          // 講一通分機；分機響幾分鐘沒接算未接
+  // 在家的電量（%／小時）
+  phoneDrain: 3, phoneCharge: 35, laptopDrain: 30, laptopCharge: 45,
+  laptopBoot: 10,        // 筆電沒電：插電、等開機
+  findOutlet: 15,        // 在外面筆電沒電：找插座
+  cloudDev: 30,          // 雲端開發機申請下來要多久
   // on-call
   pageFix: [30, 60],     // 半夜救火（判斷對／繞遠路）
   fakeFix: [10, 30],     // 假警報：調閾值、開單
@@ -186,12 +191,12 @@ const BIG_ITEMS = [
 /* 工作單題庫：est = 預估要寫幾分鐘；changes = PM 可能提出的變更。 */
 const TICKET_POOL = [
   { title: '登入頁加「記住我」', est: 60, changes: ['「記住我」改成 30 天，還要能在設定頁一鍵登出所有裝置', '順便加 Google 登入，老闆說很簡單'] },
-  { title: '訂單列表加篩選', est: 80, changes: ['篩選條件要能存成「我的常用篩選」', '日期篩選改成選區間，不是只選一天'] },
-  { title: '報表匯出 CSV', est: 55, changes: ['除了 CSV 也要能匯出 Excel', '欄位順序要照財務那張表，最後還要加總列'] },
+  { title: '訂單列表加篩選', heavy: true, est: 80, changes: ['篩選條件要能存成「我的常用篩選」', '日期篩選改成選區間，不是只選一天'] },
+  { title: '報表匯出 CSV', heavy: true, est: 55, changes: ['除了 CSV 也要能匯出 Excel', '欄位順序要照財務那張表，最後還要加總列'] },
   { title: '修購物車數量 bug', est: 45, changes: ['順便把數量上限改成 99，超過要跳提示', '數量改成可以直接打字，不只按加減'] },
-  { title: '會員等級徽章', est: 60, changes: ['徽章要有動畫，行銷說比較有感', '等級從 3 級改成 5 級'] },
+  { title: '會員等級徽章', heavy: true, est: 60, changes: ['徽章要有動畫，行銷說比較有感', '等級從 3 級改成 5 級'] },
   { title: '推播通知開關', est: 65, changes: ['開關要拆成行銷、訂單、系統三種', '晚上 10 點以後不要推播'] },
-  { title: '首頁 banner 輪播', est: 50, changes: ['banner 要依會員等級顯示不同內容', '改成可以放影片'] },
+  { title: '首頁 banner 輪播', heavy: true, est: 50, changes: ['banner 要依會員等級顯示不同內容', '改成可以放影片'] },
   { title: '結帳加優惠碼', est: 80, changes: ['優惠碼要能跟點數折抵一起用', '一張訂單可以用兩組優惠碼'] },
   { title: '商品頁加評價星等', est: 55, changes: ['評價要能附照片', '只有買過的人才能評價'] },
 ];
@@ -428,3 +433,34 @@ const WEEKEND_MSGS = {
     why: '說不急的，就讓它週一再急。',
   },
 };
+
+/* ================= 設備跑不動 ================= */
+/* 需求變更加了這些東西，單就會變「重」 */
+const HEAVY_RE = /動畫|影片|Excel|即時|照片/;
+const PC_OPTS = {
+  opts: ['關掉 Chrome、Slack、Docker 硬撐', '跟主管申請新電腦', '借阿凱的桌機跑 build', '申請公司的雲端開發機'],
+  key: ['squeeze', 'boss', 'borrow', 'cloud'],
+};
+const OLD_DEVICE = {
+  text: '小芸的測試機是 5 年前的 Android，新功能卡到不能動',
+  opts: ['舊裝置做降級：關掉動畫、資料分批載入', '請小芸換一支新手機測', '跟 PM 說舊手機以後不支援了', '「在我電腦上很順啊」'],
+  a: 0, why: '很多使用者還在用舊手機。降級處理讓舊設備也能用，新設備再享受完整效果。',
+};
+const HEAVY_INCIDENT = {
+  title: '新功能拖垮舊機器', afterDeploy: true,
+  data: ['剛上線的新功能，每次載入要查 3 倍的資料', '正式機還是 2 核 4GB 的舊 VM，CPU 100%', '其他功能也開始變慢'],
+  opts: ['先用 feature flag 關掉新功能止血，再評估要不要升級機器', '直接把正式機升級到 32 核', '請使用者先不要用新功能', '把機器重開'],
+  a: 0, why: '先止血：feature flag 一關，舊功能就恢復。升級機器要評估、要預算，不是半夜能決定的事。',
+};
+
+/* ================= 在家值班會碰到的狀況 ================= */
+/* 處理 page 時隨機遇到；mins = 多花幾分鐘，phone = 手機電量變化 */
+const HOME_TROUBLES = [
+  { text: 'VPN 連不上，重連了三次才進去', mins: 10 },
+  { text: '公司筆電剛好跳出強制更新，只能等它跑完', mins: 15 },
+  { text: '2FA 驗證碼傳到手機，手機剛好不在手邊', mins: 5 },
+  { text: '家裡 Wi-Fi 斷了，只好開手機熱點', mins: 8, phone: -15 },
+  { text: '貓睡在鍵盤上，請不走', mins: 3 },
+  { text: '公司 SSO 登入頁一直轉圈圈', mins: 8 },
+];
+const TROUBLE_RATE = 0.35;
