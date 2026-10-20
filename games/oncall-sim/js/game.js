@@ -51,6 +51,7 @@ const MAPS = {
       desk: { x: 472, y: 452, ax: 472, ay: 414, label: '你的座位' },
       rev: { x: 567, y: 452, ax: 567, ay: 414, label: '阿凱' },
       monitor: { x: 893, y: 400, ax: 893, ay: 349, label: '監控牆' },
+      cw: { x: 557, y: 192, ax: 557, ay: 164, label: '隔壁同事' },
     },
     start: 'desk',
   },
@@ -166,7 +167,7 @@ const NPC = {
   sys: { name: '系統', tag: '⚙', color: '#5B6577' },
   sales: { name: '業務 Leo', tag: '業務', color: '#C2563A' },
 };
-const PING_LABEL = { plan: '週末計畫', show: '陪看一集劇', handoff: '交接給白天 on-call', urgent: '⚡ 急件', big: '📅 明天就要', change: '需求變更', status: '問進度', helpReview: '幫看 PR', bounce: 'QA 退件', report: '事故回報', standup: '站會開始' };
+const PING_LABEL = { bento: '揪訂便當', drink: '揪訂手搖', plan: '週末計畫', show: '陪看一集劇', handoff: '交接給白天 on-call', urgent: '⚡ 急件', big: '📅 明天就要', change: '需求變更', status: '問進度', helpReview: '幫看 PR', bounce: 'QA 退件', report: '事故回報', standup: '站會開始' };
 const STATUS = { todo: '待開發', dev: '開發中', review: '待 review', qa: '待交測', testing: '測試中', ready: '可上線', done: '已上線' };
 
 /* ================= 角色設定 =================
@@ -212,6 +213,9 @@ function freshState(lv, mode) {
     s.leave = { pm: LEAVE.pm(), qa: LEAVE.qa(lv.stay), rev: LEAVE.rev(lv.stay), boss: LEAVE.boss(lv.stay) };
     for (let i = 0; i < 8; i++) s.leave['c' + i] = LEAVE.cw(lv.stay);
     s.gone = {}; s.leftLog = [];
+    s.rel = { pm: 0, qa: 0, rev: 0, boss: 0 };   // 人情：幫過人家才好開口
+    s.bento = null; s.drinkAt = 0; s.treatAt = Infinity; s.done1 = {};
+    if (Math.random() < 0.7) s.treatAt = RND(TM(15, 0), TM(16, 0));   // 主管請下午茶
   } else {
     Object.assign(s, {
       en: 72, bl: 35, page: null, pageQ: [], pages: [], lines: [], lineLog: [], dnd: null,
@@ -295,6 +299,105 @@ function ping(npc, type, dl, data) {
   toast(`${who} 找你：${PING_LABEL[type]}`);
   interrupt();
 }
+/* ---- 人情：幫過人家，人家才願意幫你 ---- */
+function rel(k, d, why) { S.rel[k] = (S.rel[k] || 0) + d; if (why) note(`${why}（${PEOPLE[k]} 人情 ${d > 0 ? '+' : ''}${d}）`, d > 0 ? 'g' : ''); }
+const tooMuch = k => S.rel[k] <= -2;
+const devTicket = () => S.tickets.filter(t => t.status === 'todo' || t.status === 'dev').sort((a, b) => (b.prog / b.est) - (a.prog / a.est))[0];
+function chat(k, who) {
+  startBusy('talk', 10, '聊兩句', () => { S.en = Math.min(100, S.en + 4); if (k) rel(k, 1); info(who, '聊兩句', esc(pick(GOSSIP))); });
+}
+/* 在群組揪團：便當、手搖 */
+function orderBento(by) {
+  runSteps('qa', [{ type: 'choice', title: by === 'me' ? '你在群組揪訂便當，自己要吃什麼？' : '小芸：「要訂便當嗎？10:40 截止喔」', opts: BENTO }], res => {
+    S.bento = BENTO[res[0].pick]; clearPing('qa');
+    if (by === 'me') { ['pm', 'qa', 'rev', 'boss'].filter(here).forEach(k => S.rel[k]++); note(`你揪了便當團，訂了${S.bento}（大家人情 +1）`, 'g'); }
+    else { rel('qa', 1, `跟小芸的便當團訂了${S.bento}`); }
+    startBusy('talk', 3, '訂便當');
+  });
+}
+function orderDrinks() {
+  if (S.drinkAt) return info('me', '手搖', '已經訂過了，再喝會一直跑廁所。');
+  clearPing('qa');
+  S.drinkAt = S.t + 40;
+  ['pm', 'qa', 'rev', 'boss'].filter(here).forEach(k => S.rel[k]++);
+  note(`🧋 訂了手搖，${hhmm(S.drinkAt)} 送到（在場同事人情 +1）`, 'g');
+  startBusy('talk', 5, '在群組揪手搖');
+}
+/* 每個人的「主動找他」選單 */
+function revMenu(own) {
+  const items = [];
+  if (own) items.push({ label: `請他 review ${own.id}`, sub: `${COST.reviewOwn} 分鐘`, go: () => reviewOwn(own, () => { if (S.tickets.some(t => t.status === 'review')) atRev(); }) });
+  const t = devTicket();
+  if (t) {
+    items.push({ label: `請教 ${t.id} 卡住的地方`, sub: '10 分鐘，這張單少寫 15 分鐘（人情 -1）', go: () => {
+      if (tooMuch('rev')) return info('rev', '阿凱', '「……你要不要先自己 google 一下？」<br><small>一直麻煩同一個人，他也會累。</small>');
+      rel('rev', -1); startBusy('talk', 10, '請教阿凱', () => { t.est = Math.max(t.prog + 5, t.est - 15); note(`阿凱一眼就看出問題，${t.id} 少寫 15 分鐘`, 'g'); });
+    } });
+    items.push({ label: `跟他一起 pair ${t.id}`, sub: '30 分鐘，進度 ×1.5（人情 -1）', go: () => {
+      if (tooMuch('rev')) return info('rev', '阿凱', '「我今天真的沒空，下次好不好。」');
+      if (t.status === 'todo') t.status = 'dev';
+      rel('rev', -1); startBusy('code', 30, `跟阿凱 pair ${t.id}`, (done) => { t.prog = Math.min(t.est, t.prog + Math.round(done * 1.5)); if (t.prog >= t.est) { t.status = 'review'; note(`${t.id} 寫完了，順便請阿凱 review`, 'g'); } });
+    } });
+  }
+  if (!S.done1.boba) items.push({ label: '請他喝一杯珍奶', sub: '人情 +2，一天一次', go: () => { S.done1.boba = true; rel('rev', 2, '請阿凱喝珍奶'); startBusy('talk', 3, '送飲料'); } });
+  items.push({ label: '聊兩句', sub: '10 分鐘，精神 +4', go: () => chat('rev', 'rev') });
+  items.push({ label: '不用了', sub: '' });
+  menu('rev', '阿凱拿下一邊耳機', '「怎麼了？」', items);
+}
+function qaMenu() {
+  const items = [], q = S.tickets.filter(t => t.status === 'qa'), testing = S.tickets.filter(t => t.status === 'testing');
+  if (q.length) items.push({ label: `請她測 ${q.map(t => t.id).join('、')}`, sub: '交測', go: () => handoff(true) });
+  if (S.pings.qa && S.pings.qa.type === 'bento') items.push({ label: '跟她的便當團', sub: '10:40 截止', go: () => orderBento('qa') });
+  if (S.pings.qa && S.pings.qa.type === 'drink') items.push({ label: '跟她的手搖團', sub: '40 分鐘後送到', go: orderDrinks });
+  const half = S.tickets.find(t => (t.status === 'dev') && t.prog / t.est >= 0.5 && !t.early);
+  if (half) items.push({ label: `${half.id} 寫到一半，先請她看一下`, sub: '提早測，之後比較不會被退（人情 -1）', go: () => {
+    if (tooMuch('qa')) return info('qa', '小芸', '「我手上還有三張要測……等你寫完再說好嗎。」');
+    rel('qa', -1); half.early = true; half.bug = false; half.fuzzy = false;
+    startBusy('talk', 10, '請小芸先看', () => note(`小芸先看過 ${half.id}，抓到兩個問題`, 'g'));
+  } });
+  if (testing.length) items.push({ label: '幫她一起測', sub: '15 分鐘，測試中的單提早測完（人情 +1）', go: () => startBusy('test', 15, '幫小芸測', () => { testing.forEach(t => { t.qaAt -= 15; }); rel('qa', 1, '幫小芸一起測'); }) });
+  if (!S.drinkAt && S.t >= TM(13, 30) && S.t < TM(16, 30) && !(S.pings.qa && S.pings.qa.type === 'drink')) items.push({ label: '揪她一起訂手搖', sub: '40 分鐘後送到，精神 +8', go: orderDrinks });
+  items.push({ label: '聊兩句', sub: '10 分鐘，精神 +4', go: () => chat('qa', 'qa') });
+  items.push({ label: '不用了', sub: '' });
+  menu('qa', '小芸', '「嗯？」', items);
+}
+function pmMenu() {
+  const items = [], t = S.tickets.filter(x => x.status !== 'done' && !x.confirmed)[0];
+  if (t) items.push({ label: `跟她確認 ${t.id} 的驗收條件`, sub: '10 分鐘，比較不會被 QA 退……但她可能一問就想到新東西', go: () => startBusy('talk', 10, '確認驗收條件', () => {
+    t.fuzzy = false; t.confirmed = true;
+    if (LV.key !== 'freeze' && Math.random() < 0.25 && t.changes.length) { note(`安娜：「欸你這樣一問，我想到可以再加……」`, 'b'); t.pendingChange = true; ping('pm', 'change', LV.changeDl, { tid: t.id, text: t.changes.shift(), add: RND(...COST.changeAdd) }); }
+    else { rel('pm', 1, `跟安娜對清楚 ${t.id} 的驗收條件`); }
+  }) });
+  if (LV.key !== 'freeze' && !S.pmAlly) items.push({ label: '請她幫忙擋老闆的新需求', sub: '下次需求變更比較容易協商延後（人情 -1）', go: () => {
+    if (tooMuch('pm')) return info('pm', '安娜', '「我也很想擋啊……但我上次幫你擋過了。」');
+    rel('pm', -1); S.pmAlly = true; startBusy('talk', 10, '跟安娜套好招', () => note('安娜：「好，下次老闆來我先幫你擋擋看。」', 'g'));
+  } });
+  items.push({ label: '聊兩句', sub: '10 分鐘，精神 +4', go: () => chat('pm', 'pm') });
+  items.push({ label: '不用了', sub: '' });
+  menu('pm', '安娜', '「怎麼了？需求有問題嗎？」', items);
+}
+function bossMenu() {
+  const items = [];
+  if (!S.reported) items.push({ label: '主動報告進度', sub: '10 分鐘，下次他就不會來問（+3）', go: () => startBusy('talk', 10, '主動報告', () => { S.reported = true; add(3, '主動跟大衛報告進度'); rel('boss', 1); }) });
+  const later = S.tickets.filter(t => t.status === 'todo' && !t.urgent && !t.big);
+  if (later.length && !S.done1.prio) items.push({ label: '「事情太多了，可以幫我排一下優先順序嗎？」', sub: '15 分鐘，有機會把一張單延到下個 sprint', go: () => startBusy('talk', 15, '跟大衛排優先順序', () => {
+    S.done1.prio = true;
+    if (Math.random() < 0.5 + S.rel.boss * 0.1) { const t = later[later.length - 1]; S.tickets.splice(S.tickets.indexOf(t), 1); note(`大衛：「${t.id} 排到下個 sprint 吧。」`, 'g'); info('boss', '大衛', `「好，${t.id} 先排到下個 sprint。」<br><small>這張不會算在今天沒做完的單裡。</small>`); }
+    else info('boss', '大衛', '「這些都很重要耶……你加油！」');
+  }) });
+  items.push({ label: '聊兩句', sub: '10 分鐘，精神 +4', go: () => chat('boss', 'boss') });
+  items.push({ label: '不用了', sub: '' });
+  menu('boss', '大衛', '「有什麼事嗎？」', items);
+}
+function atCoworker() {
+  if (!here('c3')) return info('sys', '隔壁同事', '座位空了，椅子上掛著一件外套。');
+  menu('sys', '隔壁組的同事', '他把螢幕切到另一個視窗。', [
+    { label: '聊兩句', sub: '10 分鐘，精神 +4，順便聽點八卦', go: () => chat(null, 'sys') },
+    ...(!S.bento && S.t < TM(10, 40) ? [{ label: '在群組揪大家訂便當', sub: '大家人情 +1', go: () => orderBento('me') }] : []),
+    ...(!S.drinkAt && S.t >= TM(13, 30) && S.t < TM(16, 30) ? [{ label: '揪大家訂手搖', sub: '40 分鐘後送到，精神 +8', go: orderDrinks }] : []),
+    { label: '不用了', sub: '' },
+  ]);
+}
 /* ---- 分機：打進來的電話，人要在座位上才接得到 ---- */
 const atDeskNow = () => MAPK === 'office' && Math.hypot(S.me.x - HS.desk.x, S.me.y - HS.desk.y) < 40;
 function ringExt(call) {
@@ -354,6 +457,8 @@ function missPing(npc, p) {
     report: () => add(-8, '事故沒有回報主管，主管是從客服那邊聽到的'),
     standup: () => add(-5, '站會沒到'),
     show: () => famChange(-1, '小雯自己把那集劇看完了'),
+    bento: () => note('便當團截止了，你沒跟到', 'b'),
+    drink: () => note('手搖團截止了', ''),
     plan: () => { S.plans.push({ label: p.data.plan.label, result: '沒回小雯，取消了' }); famChange(-1, `沒回小雯，${p.data.plan.label}取消了`); },
     handoff: () => add(-5, '沒交接，白天的 on-call 一頭霧水'),
   };
@@ -625,6 +730,7 @@ function tickDay(prev, dm) {
   for (const k in S.leave) if (here(k) && S.t >= S.leave[k]) someoneLeaves(k);
   while (S.evI < LV.events.length && LV.events[S.evI].t <= S.t) {
     const ev = LV.events[S.evI++];
+    if (ev.ping && ev.ping[1] === 'status' && S.reported) { S.reported = false; note('大衛：「你早上報告過了，很好。」', 'g'); continue; }
     if (ev.ping) ping(...ev.ping);
     if (ev.alert) fireAlert(false);
   }
@@ -645,7 +751,14 @@ function tickDay(prev, dm) {
   for (const t of S.tickets) if (t.status === 'testing' && S.t >= t.qaAt) qaResult(t);
   for (const npc in S.pings) { const p = S.pings[npc]; if (p && S.t > p.dl) missPing(npc, p); }
   if (S.alert && S.t > S.alert.dl) { S.alert.esc++; S.alert.dl = S.t + COST.alertAck; add(-10, `告警沒人處理，已經升級第 ${S.alert.esc} 次`); toast('🚨 告警升級了！快去機房', 3000); }
-  if (prev < LUNCH.open && S.t >= LUNCH.open) { note('12:00 便當送到你桌上了 🍱'); toast('🍱 便當送到你桌上了'); }
+  if (prev < TM(9, 50) && S.t >= TM(9, 50) && !S.bento && here('qa')) ping('qa', 'bento', 50);
+  if (prev < LUNCH.open && S.t >= LUNCH.open) {
+    if (S.bento) { note(`12:00 ${S.bento}送到你桌上了 🍱`); toast('🍱 便當送到你桌上了'); }
+    else { note('12:00 大家的便當都到了……你沒訂', 'b'); toast('你沒訂到便當：下樓買，或去茶水間泡麵'); }
+  }
+  if (S.drinkAt && prev < S.drinkAt && S.t >= S.drinkAt) { S.en = Math.min(100, S.en + 8); S.bl = Math.min(100, S.bl + 12); note('🧋 手搖送到了，精神 +8'); toast('🧋 飲料到了！'); }
+  if (prev < S.treatAt && S.t >= S.treatAt) { note(`🍰 大衛請大家下午茶！放在茶水間 ${BOSS_TREAT[LV.key]}`); toast('🍰 大衛請下午茶，去茶水間拿'); }
+  if (prev < TM(14, 30) && S.t >= TM(14, 30) && !S.drinkAt && here('qa') && Math.random() < 0.5) ping('qa', 'drink', 20);
   if (prev < DEPLOY.open && S.t >= DEPLOY.open) { note(`${hhmm(DEPLOY.open)} 部署窗口開了（到 ${hhmm(DEPLOY.close)}）`); toast('部署窗口開了：可上線的單回座位部署'); }
   if (prev < DEPLOY.close - 30 && S.t >= DEPLOY.close - 30 && S.tickets.some(t => t.status === 'ready')) toast('部署窗口剩 30 分鐘！', 3000);
   S.bl = Math.min(100, S.bl + 0.17 * dm);
@@ -826,7 +939,7 @@ const busyRate = () => S.busy && S.busy.kind === 'sleep' ? SLEEP_RATE : BUSY_RAT
 /* ================= 互動 ================= */
 function interact(id) {
   if (!S.started || S.ended || S.busy || !ov.hidden) return;
-  const day = { desk: atDesk, rev: atRev, qa: atQA, pm: atPM, boss: atBoss, meet: atMeet, coffee: atCoffee, wc: atWC, monitor: atMonitor };
+  const day = { desk: atDesk, rev: atRev, qa: atQA, pm: atPM, boss: atBoss, meet: atMeet, coffee: atCoffee, wc: atWC, cw: atCoworker, monitor: atMonitor };
   const night = { bed: atBed, laptop: atLaptop, sofa: atSofa, wc: atWC, shower: atShower, table: atTable, door: atDoor };
   const f = (atHome() ? night : day)[id];
   f && f();
@@ -845,7 +958,8 @@ function atDesk() {
     if (hot.length) items.push({ label: `緊急部署 ${hot.map(t => t.id).join('、')}`, sub: '急件走 hotfix，不用等部署窗口', go: () => deploy(hot) });
     if (ready.length > hot.length) items.push({ label: `部署 ${ready.filter(t => !t.urgent).map(t => t.id).join('、')}`, sub: `部署窗口 ${hhmm(DEPLOY.open)}–${hhmm(DEPLOY.close)}`, disabled: true });
   }
-  if (!S.ate && S.t >= LUNCH.open) {
+  if (!S.ate && S.t >= LUNCH.open && !S.bento) items.push({ label: '🏃 下樓買午餐', sub: '30 分鐘，精神 +12（也可以去茶水間泡麵）', go: () => startBusy('eat', 30, '下樓買午餐', () => { S.ate = true; S.en = Math.min(100, S.en + 12); note('下樓買了午餐'); }) });
+  if (!S.ate && S.t >= LUNCH.open && S.bento) {
     items.push({ label: '🍱 專心吃便當', sub: `${COST.lunch} 分鐘，精神 +12`, go: () => startBusy('eat', COST.lunch, '吃便當', () => { S.ate = true; S.en = Math.min(100, S.en + 12); add(S.t <= LUNCH.late ? 2 : 0, S.t <= LUNCH.late ? '好好吃了午餐' : '終於吃到午餐了'); }) });
     if (codable.length) items.push({ label: `🍱 邊吃便當邊寫 ${codable[0].id}`, sub: '效率剩 7 成，精神只回一半', go: () => code(codable[0], true) });
   }
@@ -938,17 +1052,17 @@ function atRev() {
     const q = draw1('review', REVIEW);
     runSteps('rev', [{ type: 'single', title: '阿凱：「幫我看一下這個 PR，總覺得哪裡怪怪的」', code: q.code, opts: q.opts, a: q.a, why: q.why }], res => {
       clearPing('rev');
-      if (res[0].ok) add(6, '幫阿凱抓到 bug'); else add(-2, '幫阿凱 review 卻按了 LGTM');
+      if (res[0].ok) { add(6, '幫阿凱抓到 bug'); rel('rev', 1); } else add(-2, '幫阿凱 review 卻按了 LGTM');
       startBusy('review', COST.reviewHelp, '幫阿凱 review', () => { if (own) atRev(); });
     });
     return;
   }
-  if (own) return reviewOwn(own, () => { if (S.tickets.some(t => t.status === 'review')) atRev(); });
-  info('rev', '阿凱戴著降噪耳機', '他在專心寫 code。等你有寫完的單再來找他 review。');
+  revMenu(own);
 }
 function atQA() {
   if (!here('qa')) return handoff(true);
   const p = S.pings.qa;
+  if (p && (p.type === 'bento' || p.type === 'drink')) return qaMenu();
   if (p) {
     const t = ticket(p.data.tid);
     const R = p.data.old ? OLD_DEVICE : QA_REPLY;
@@ -960,7 +1074,7 @@ function atQA() {
     });
     return;
   }
-  handoff(true);
+  qaMenu();
 }
 function handoff(alone) {
   const q = S.tickets.filter(t => t.status === 'qa');
@@ -976,7 +1090,7 @@ function handoff(alone) {
 function atPM() {
   const p = S.pings.pm;
   if (!here('pm')) return info('pm', '安娜已經下班了', '座位上只剩一杯喝完的手搖，和一張寫著「需求 v3？」的便利貼。');
-  if (!p) return info('pm', '安娜在講電話', '「對對對，那個我們評估一下……」她揮手示意你先回去。');
+  if (!p) return pmMenu();
   if (p.type === 'urgent') {
     return runSteps('pm', [
       { type: 'info', title: `⚡ 急件：${p.data.title}`, html: `<div class="quote">${LV.from}：<b>「${esc(p.data.title)}」，${LV.urgent.due / 60} 小時內要上線。</b></div><p>預估 ${p.data.est} 分鐘。急件可以不等部署窗口，直接緊急部署。</p>` },
@@ -1011,7 +1125,7 @@ function atPM() {
     const clear = res[1].ok;
     if (clear) add(2, '需求問得很清楚'); else add(-3, '需求只問了一半');
     let defer = false;
-    if (res[2].pick === 1) defer = Math.random() < LV.negotiate + (clear ? 0.2 : 0);
+    if (res[2].pick === 1) { defer = Math.random() < LV.negotiate + (clear ? 0.2 : 0) + (S.pmAlly ? 0.3 : 0); if (S.pmAlly) { S.pmAlly = false; note('安娜幫你在老闆面前擋了一下'); } }
     startBusy('talk', (clear ? COST.pmTalk.clear : COST.pmTalk.rushed) + (res[2].pick === 1 ? COST.pmTalk.negotiate : 0), '跟安娜討論需求');
     if (defer) {
       t.pendingChange = false; S.stats.deferred++;
@@ -1026,13 +1140,13 @@ function atPM() {
 function atBoss() {
   const p = S.pings.boss;
   if (!here('boss')) return info('boss', '大衛已經下班了', '椅子推得整整齊齊。');
-  if (!p) return info('boss', '大衛在看報表', '「有事再找我，沒事就去寫 code 吧。」');
+  if (!p) return bossMenu();
   if (p.type === 'status') {
     const done = S.tickets.filter(t => t.status === 'done').length, risky = S.tickets.filter(t => t.ver > 1 && t.status !== 'done').length;
     const opts = [`「${done} 張上線、${S.tickets.length - done} 張進行中；${risky ? `${risky} 張因為需求變更可能會晚，我已經跟 PM 在對範圍` : '目前沒有風險'}」`, '「都很順，應該沒問題」', '「還在寫」', '把每個 function 的實作細節講一遍'];
     runSteps('boss', [{ type: 'single', title: p.data.hot ? `大衛：「${p.data.hot} 怎麼還沒上？業務在我這邊跳腳。」` : '大衛：「進度怎麼樣？等下要跟老闆報告」', opts, a: 0, why: '回報講結論：完成多少、還剩多少、有什麼風險、你打算怎麼處理。壞消息早點講比晚點講好。' }], res => {
       clearPing('boss');
-      if (res[0].ok) add(5, '進度回報清楚'); else add(-3, '主管聽完還是不知道進度');
+      if (res[0].ok) { add(5, '進度回報清楚'); rel('boss', 1); } else add(-3, '主管聽完還是不知道進度');
       startBusy('talk', COST.status, '跟主管報告');
       if (res[0].pick === 1) { S.jinx = true; note('你說了「應該沒問題」……', 'b'); }
     });
@@ -1056,6 +1170,11 @@ function atMeet() {
   });
 }
 function atCoffee() {
+  const extra = [];
+  if (S.t >= S.treatAt && S.t < S.treatAt + 40 && !S.done1.treat) extra.push({ label: '🍰 拿大衛請的下午茶', sub: '精神 +10，順便跟大家聊兩句', go: () => { S.done1.treat = true; startBusy('talk', 10, '吃下午茶', () => { S.en = Math.min(100, S.en + 10); if (here('boss')) rel('boss', 1); info('boss', '大衛', BOSS_TREAT[LV.key]); }); } });
+  if (!S.ate && S.t >= LUNCH.open && !S.bento) extra.push({ label: '🍜 泡碗泡麵', sub: '10 分鐘，精神 +6', go: () => startBusy('eat', 10, '泡泡麵', () => { S.ate = true; S.en = Math.min(100, S.en + 6); note('午餐是一碗泡麵'); }) });
+  if (extra.length && !S.coffeeMenu) { S.coffeeMenu = true; return menu('me', '茶水間', '', [...extra, { label: '☕ 泡咖啡', sub: '精神 +18', go: () => { S.coffeeMenu = false; atCoffee(); } }, { label: '不用了', sub: '' }]); }
+  S.coffeeMenu = false;
   if (S.coffee >= 3) return info('me', '咖啡機', '你已經喝了三杯，手開始抖了。今天不要再喝了。');
   startBusy('coffee', COST.coffee, '泡咖啡', () => { S.coffee++; S.en = Math.min(100, S.en + 18); S.bl = Math.min(100, S.bl + 15); note(`喝了第 ${S.coffee} 杯咖啡 ☕`); });
 }
@@ -1302,6 +1421,7 @@ function intro(lv, mode) {
       <li>PM 會來改需求：<b>${lv.freq}</b>。先問清楚再動手，能協商就協商。</li>
       ${lv.urgent ? '<li>⚡ <b>急件</b>會插進來：先去找安娜問清楚範圍，2 小時內要上線。業務會一直打分機來催，每通都會打斷你。急件可以不等部署窗口直接緊急部署，QA 也會先測。</li>' : ''}
       ${lv.big ? `<li>📅 ${hhmm(lv.big.at)} 會來一張<b>明天就要</b>的大單。先跟安娜把範圍砍到 demo 需要的部分；18:00 做不完就得加班，不然 demo 會開天窗。</li>` : ''}
+      <li>沒人找你的時候也可以<b>主動找同事</b>：請教、pair、提早給 QA 看、確認驗收條件、主動報告、揪團訂便當和手搖、聊天。幫過人家，人家才願意幫你。</li>
       <li>桌上有<b>分機</b>：找安娜、大衛、小芸可以直接打，不用走過去。分機響了要回座位接。</li>
       <li>有些單比較<b>重</b>（🐢）：你的電腦、QA 的舊測試機、正式機的舊規格都可能跑不動。</li>
       <li>記得喝咖啡、吃便當（12:00 送到桌上）、上廁所。精神歸零就會趴在鍵盤上。</li></ul></div>
@@ -1343,6 +1463,7 @@ function endDay(collapsed) {
     ['上線的單', `${S.deployed} / ${S.tickets.length}`],
     ...extra,
     ['加班', S.ot ? `${dur(S.t - DAY_END)}<br><small>加班費：0 元（責任制）</small>` : '沒有 🎉'],
+    ['同事人情', Object.keys(PEOPLE).map(k => `${PEOPLE[k]} ${S.rel[k] > 0 ? '+' : ''}${S.rel[k]}`).join('　')],
     ...(collapsed ? [] : leaveRows()),
     ['需求變更', `${S.stats.changes} 次（協商延後 ${S.stats.deferred} 次）`],
     ['QA 退件', `${S.stats.bounces} 次`],
@@ -1431,7 +1552,7 @@ function resultCard(title, total, rank, rows, nextLabel) {
   MODAL = { kind: 'end' };
   openCard(`${whoHead('sys')}<h4>${title}</h4>
     <div class="result"><div class="big">${total}</div><div><b>${rank[0]}</b><br><small>${rank[1]}</small></div></div>
-    <table class="stats">${rows.filter(r => r[0] !== '加分／扣分').concat([['加分／扣分', `${(S.ledger || []).filter(x => x.pts > 0).length} 次／${(S.ledger || []).filter(x => x.pts < 0).length} 次`]]).map(r => `<tr${['需求頻率', '下班順序', '主管印象', '家人', '同事', '半夜訊息', '週末計畫', '週末訊息', '手機與筆電'].includes(r[0]) ? ' class="txt"' : ''}><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table>
+    <table class="stats">${rows.filter(r => r[0] !== '加分／扣分').concat([['加分／扣分', `${(S.ledger || []).filter(x => x.pts > 0).length} 次／${(S.ledger || []).filter(x => x.pts < 0).length} 次`]]).map(r => `<tr${['需求頻率', '同事人情', '下班順序', '主管印象', '家人', '同事', '半夜訊息', '週末計畫', '週末訊息', '手機與筆電'].includes(r[0]) ? ' class="txt"' : ''}><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table>
     ${ledgerHTML()}
     <div class="acts"><button class="btn primary" id="again">再來一次</button><button class="btn" id="other">${nextLabel}</button><button class="btn" id="lvs">換需求頻率</button></div>`);
   const mode = MODE;
@@ -1629,7 +1750,7 @@ function drawOffice(now) {
   island(330, 340, 4, [cw(4), null, cw(5), cw(6)], [null, null, who('rev', NPC.rev, { headphones: true }), cw(7)],
     (r, i) => r === 1 && i === 1 ? (coding ? '#9BE38F' : '#5FB3E6') : r === 1 && i === 2 ? '#F5C26B' : null);
   ctx.fillStyle = '#FFE27A'; ctx.fillRect(500, 386, 9, 9);   // 你螢幕上的便利貼
-  if (S && S.t >= LUNCH.open && !S.ate) { ctx.fillStyle = '#E5484D'; rr(436, 380, 22, 15, 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.fillRect(445, 380, 3, 15); }   // 桌上的便當
+  if (S && S.bento && S.t >= LUNCH.open && !S.ate) { ctx.fillStyle = '#E5484D'; rr(436, 380, 22, 15, 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.fillRect(445, 380, 3, 15); }   // 桌上的便當
   // 你桌上的分機：響的時候會震
   const ring = S && S.ext, jig = ring ? Math.sin(now / 40) * 1.5 : 0;
   ctx.fillStyle = ring ? '#E5484D' : '#3A4558'; rr(492 + jig, 372, 16, 11, 3); ctx.fill(); ctx.fillStyle = '#C8CDD4'; ctx.fillRect(495 + jig, 374, 10, 3);
@@ -1853,7 +1974,8 @@ function updateDayPanel() {
   if (rv.length) todo.push({ t: `找阿凱 review：${rv.join('、')}` });
   if (qa.length) todo.push({ t: `交給小芸測試：${qa.join('、')}` });
   if (rd.length) todo.push({ u: S.t >= DEPLOY.close - 30, t: S.t < DEPLOY.open ? `可上線：${rd.join('、')}（${hhmm(DEPLOY.open)} 後部署）` : `回座位部署：${rd.join('、')}（${hhmm(DEPLOY.close)} 前）` });
-  if (!S.ate && S.t >= LUNCH.open) todo.push({ u: S.t > LUNCH.late, t: S.t > LUNCH.late ? '便當還在桌上，精神掉得很快' : `🍱 便當在你桌上（${hhmm(LUNCH.late)} 前吃）` });
+  if (!S.ate && S.t >= LUNCH.open) todo.push({ u: S.t > LUNCH.late, t: !S.bento ? '沒訂便當：回座位選「下樓買」，或去茶水間泡麵' : S.t > LUNCH.late ? '便當還在桌上，精神掉得很快' : `🍱 ${S.bento}在你桌上（${hhmm(LUNCH.late)} 前吃）` });
+  if (S.t >= S.treatAt && S.t < S.treatAt + 40 && !S.done1.treat) todo.push({ t: '🍰 大衛請下午茶，在茶水間' });
   if (S.bl >= 70) todo.push({ u: S.bl >= 90, t: '去廁所' });
   if (S.en < 35) todo.push({ u: S.en < 20, t: '精神快不行了：喝咖啡或吃飯' });
   $('todo').innerHTML = todo.length ? todo.map(x => `<li class="${x.u ? 'u' : ''}">${esc(x.t)}</li>`).join('') : '<li class="none">目前沒有人在找你，專心寫 code 吧</li>';
