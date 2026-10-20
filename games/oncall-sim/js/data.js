@@ -54,7 +54,8 @@ const COST = {
   report: 10,            // 跟主管回報事故
   alertFix: [25, 50],    // 白天處理告警（判斷對／繞遠路）
   alertAck: 15,          // 告警響了幾分鐘內要到機房
-  coffee: 5, lunch: 30, wc: 5,
+  coffee: 5, lunch: 20, wc: 5,   // 便當在座位上吃
+  extTalk: 3, extRing: 3,          // 講一通分機；分機響幾分鐘沒接算未接
   // on-call
   pageFix: [30, 60],     // 半夜救火（判斷對／繞遠路）
   fakeFix: [10, 30],     // 假警報：調閾值、開單

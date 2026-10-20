@@ -48,7 +48,6 @@ const MAPS = {
       boss: { x: 768, y: 120, ax: 738, ay: 116, label: '主管 大衛' },
       wc: { x: 65, y: 450, ax: 65, ay: 495, label: '廁所' },
       coffee: { x: 160, y: 465, ax: 160, ay: 502, label: '咖啡機' },
-      bento: { x: 255, y: 465, ax: 255, ay: 502, label: '便當' },
       desk: { x: 472, y: 452, ax: 472, ay: 414, label: '你的座位' },
       rev: { x: 567, y: 452, ax: 567, ay: 414, label: '阿凱' },
       monitor: { x: 893, y: 400, ax: 893, ay: 349, label: '監控牆' },
@@ -165,6 +164,7 @@ const NPC = {
   home: { name: '家', tag: '🏠', color: '#5B6577' },
   fam: { name: '另一半 小雯', tag: '家', color: '#D9774A', shirt: '#F2C6A0', hair: '#4A3426' },
   sys: { name: '系統', tag: '⚙', color: '#5B6577' },
+  sales: { name: '業務 Leo', tag: '業務', color: '#C2563A' },
 };
 const PING_LABEL = { plan: '週末計畫', show: '陪看一集劇', handoff: '交接給白天 on-call', urgent: '⚡ 急件', big: '📅 明天就要', change: '需求變更', status: '問進度', helpReview: '幫看 PR', bounce: 'QA 退件', report: '事故回報', standup: '站會開始' };
 const STATUS = { todo: '待開發', dev: '開發中', review: '待 review', qa: '待交測', testing: '測試中', ready: '可上線', done: '已上線' };
@@ -277,6 +277,43 @@ function ping(npc, type, dl, data) {
   toast(`${who} 找你：${PING_LABEL[type]}`);
   interrupt();
 }
+/* ---- 分機：打進來的電話，人要在座位上才接得到 ---- */
+const atDeskNow = () => MAPK === 'office' && Math.hypot(S.me.x - HS.desk.x, S.me.y - HS.desk.y) < 40;
+function ringExt(call) {
+  if (S.ext) { (S.extQ = S.extQ || []).push(call); return; }
+  S.ext = { ...call, dl: S.t + COST.extRing };
+  note(`☎ 分機響了：${call.who}`);
+  toast(`☎ 你座位的分機在響（${call.who}）`, 3000);
+  if (S.busy && atDeskNow()) { if (S.busy.kind === 'code') interrupt(); else if (S.busy.kind === 'eat') finishBusy(true); }
+  if (!S.busy && ov.hidden && atDeskNow()) answerExt();
+}
+function answerExt() {
+  const c = S.ext; if (!c) return;
+  S.ext = null;
+  runSteps(c.npc, [{ type: 'choice', title: c.text, html: '<small>☎ 分機</small>', opts: c.opts }], res => {
+    c.onAnswer(res[0].pick);
+    startBusy('talk', COST.extTalk, '講分機', nextExt);
+  });
+}
+function nextExt() { const q = S.extQ; if (q && q.length) ringExt(q.shift()); }
+function missExt() { const c = S.ext; S.ext = null; note(`☎ ${c.who}的分機沒人接`, 'b'); c.onMiss(); nextExt(); }
+/* 急件：業務一直打來催 */
+const SALES_OFF = TM(19, 0);
+function nagNext(t) { return S.t < t.due - 30 ? t.due - 30 : S.t < t.due ? t.due + 20 : S.t + 20; }
+function nagCall(t) {
+  const late = S.t > t.due, left = Math.max(10, t.est - t.prog + 50);
+  return {
+    npc: 'sales', who: '業務 Leo',
+    text: late ? `業務 Leo：「${t.id} 不是說 ${hhmm(t.due)} 嗎？客戶在電話上了！」` : `業務 Leo：「${t.id} 好了沒？客戶一直在問。」`,
+    opts: [`「再 ${left} 分鐘左右，好了馬上跟你說」`, '「快好了快好了」', '「你一直打來我更寫不完」'],
+    onAnswer: i => {
+      if (i === 0) add(1, '給業務一個明確的時間');
+      if (i === 1) { add(-1, '「快好了」——業務 15 分鐘後又會打來'); t.nagAt = S.t + 15; }
+      if (i === 2) { add(-2, '跟業務吵起來，他去找主管了'); if (!S.pings.boss) ping('boss', 'status', 30, { hot: t.id }); }
+    },
+    onMiss: () => { add(-3, '業務打分機沒人接'); t.nagAt = S.t + 15; if (late && !S.pings.boss) ping('boss', 'status', 30, { hot: t.id }); },
+  };
+}
 /* 寫 code 寫到一半被打斷：馬上停下來，還要付出一點切換脈絡的代價 */
 function interrupt() {
   if (!S.busy || S.busy.kind !== 'code' || S.busy.left <= 0) return;
@@ -345,6 +382,7 @@ function applyChange(t, d, fuzzy) {
 function addUrgent(d, clear) {
   const t = newTicketObj(S.nextId++, `⚡ ${d.title}`, clear ? Math.round(d.est * 0.75) : d.est, []);
   Object.assign(t, { urgent: true, due: S.t + LV.urgent.due, fuzzy: !clear });
+  t.nagAt = t.due - 60;   // 剩 60 分鐘、剩 30 分鐘、超時後每 20 分鐘，業務都會打來
   S.tickets.unshift(t);
   note(`⚡ 急件 ${t.id}：${hhmm(t.due)} 前要上線`, 'b');
   return t;
@@ -549,12 +587,17 @@ function tickDay(prev, dm) {
   }
   if (LV.big && !S.bigFired && S.t >= LV.big.at) { S.bigFired = true; ping('pm', 'big', LV.big.dl, { ...draw1('big', BIG_POOL) }); }
   for (const t of S.tickets) if (t.urgent && t.status !== 'done' && !t.late && S.t > t.due) { t.late = true; add(-10, `⚡ ${t.id} 急件超過時限`); }
+  // 業務一次只催最急的那張，兩通之間至少隔 15 分鐘；19:00 他下班就不打了
+  const hot = S.tickets.filter(t => t.urgent && t.status !== 'done').sort((a, b) => a.due - b.due)[0];
+  if (hot && S.t < SALES_OFF && S.t >= hot.nagAt && !S.ext && S.t - (S.lastNag || -99) >= 15) { S.lastNag = S.t; hot.nagAt = nagNext(hot); ringExt(nagCall(hot)); }
+  if (LV.urgent && prev < SALES_OFF && S.t >= SALES_OFF) note('業務 Leo 下班了，分機終於安靜了');
+  if (S.ext && S.t > S.ext.dl) missExt();
   if (S.ot && Math.floor((prev - DAY_END) / 30) !== Math.floor((S.t - DAY_END) / 30)) add(-3, '又加班了 30 分鐘');
   if (S.t >= S.nextChange) { fireChange(); S.nextChange = LV.changeEvery ? S.t + RND(...LV.changeEvery) : Infinity; if (S.nextChange > TM(17, 15)) S.nextChange = Infinity; }
   for (const t of S.tickets) if (t.status === 'testing' && S.t >= t.qaAt) qaResult(t);
   for (const npc in S.pings) { const p = S.pings[npc]; if (p && S.t > p.dl) missPing(npc, p); }
   if (S.alert && S.t > S.alert.dl) { S.alert.esc++; S.alert.dl = S.t + COST.alertAck; add(-10, `告警沒人處理，已經升級第 ${S.alert.esc} 次`); toast('🚨 告警升級了！快去機房', 3000); }
-  if (prev < LUNCH.open && S.t >= LUNCH.open) note('12:00 午餐時間，便當在茶水間');
+  if (prev < LUNCH.open && S.t >= LUNCH.open) { note('12:00 便當送到你桌上了 🍱'); toast('🍱 便當送到你桌上了'); }
   if (prev < DEPLOY.open && S.t >= DEPLOY.open) { note(`${hhmm(DEPLOY.open)} 部署窗口開了（到 ${hhmm(DEPLOY.close)}）`); toast('部署窗口開了：可上線的單回座位部署'); }
   if (prev < DEPLOY.close - 30 && S.t >= DEPLOY.close - 30 && S.tickets.some(t => t.status === 'ready')) toast('部署窗口剩 30 分鐘！', 3000);
   S.bl = Math.min(100, S.bl + 0.17 * dm);
@@ -719,7 +762,7 @@ const busyRate = () => S.busy && S.busy.kind === 'sleep' ? SLEEP_RATE : BUSY_RAT
 /* ================= 互動 ================= */
 function interact(id) {
   if (!S.started || S.ended || S.busy || !ov.hidden) return;
-  const day = { desk: atDesk, rev: atRev, qa: atQA, pm: atPM, boss: atBoss, meet: atMeet, coffee: atCoffee, bento: atBento, wc: atWC, monitor: atMonitor };
+  const day = { desk: atDesk, rev: atRev, qa: atQA, pm: atPM, boss: atBoss, meet: atMeet, coffee: atCoffee, wc: atWC, monitor: atMonitor };
   const night = { bed: atBed, laptop: atLaptop, sofa: atSofa, wc: atWC, shower: atShower, table: atTable, door: atDoor };
   const f = (atHome() ? night : day)[id];
   f && f();
@@ -727,6 +770,7 @@ function interact(id) {
 
 /* ---- 上班 ---- */
 function atDesk() {
+  if (S.ext) return answerExt();
   const rank = t => t.urgent ? t.due : t.big ? 1e5 : 2e5;
   const codable = S.tickets.filter(t => t.status === 'todo' || t.status === 'dev').sort((a, b) => rank(a) - rank(b));
   const ready = S.tickets.filter(t => t.status === 'ready'), hot = ready.filter(t => t.urgent);
@@ -737,6 +781,15 @@ function atDesk() {
     if (hot.length) items.push({ label: `緊急部署 ${hot.map(t => t.id).join('、')}`, sub: '急件走 hotfix，不用等部署窗口', go: () => deploy(hot) });
     if (ready.length > hot.length) items.push({ label: `部署 ${ready.filter(t => !t.urgent).map(t => t.id).join('、')}`, sub: `部署窗口 ${hhmm(DEPLOY.open)}–${hhmm(DEPLOY.close)}`, disabled: true });
   }
+  if (!S.ate && S.t >= LUNCH.open) {
+    items.push({ label: '🍱 專心吃便當', sub: `${COST.lunch} 分鐘，精神 +12`, go: () => startBusy('eat', COST.lunch, '吃便當', () => { S.ate = true; S.en = Math.min(100, S.en + 12); add(S.t <= LUNCH.late ? 2 : 0, S.t <= LUNCH.late ? '好好吃了午餐' : '終於吃到午餐了'); }) });
+    if (codable.length) items.push({ label: `🍱 邊吃便當邊寫 ${codable[0].id}`, sub: '效率剩 7 成，精神只回一半', go: () => code(codable[0], true) });
+  }
+  // 分機：不用走過去
+  ['pm', 'boss', 'qa'].filter(k => here(k) && (S.pings[k] || (k === 'qa' && S.tickets.some(t => t.status === 'qa')))).forEach(k => items.push({
+    label: `☎ 打分機給${PEOPLE[k]}（${S.pings[k] ? PING_LABEL[S.pings[k].type] : '請她測'}）`, sub: '不用走過去',
+    go: () => { note(`☎ 打分機給${PEOPLE[k]}`); ({ pm: atPM, boss: atBoss, qa: atQA })[k](); },
+  }));
   codable.forEach(t => items.push({
     label: `寫 ${t.id}「${t.title}」${t.ver > 1 ? ` v${t.ver}` : ''}`,
     sub: `還要 ${t.est - t.prog} 分鐘${t.urgent ? `　⚡ ${hhmm(t.due)} 前要上線` : ''}${t.big ? '　📅 明天一早要' : ''}${t.pendingChange ? '　⚠ PM 正在找你談這張的變更' : ''}`,
@@ -746,11 +799,12 @@ function atDesk() {
   items.push({ label: '先不要', sub: '' });
   menu('me', '你的電腦', '要做什麼？寫 code 時點一下地圖可以先停下來。', items);
 }
-function code(t) {
+function code(t, eating) {
   if (t.status === 'todo') t.status = 'dev';
   const mins = Math.min(COST.codeBlock, t.est - t.prog);
-  startBusy('code', mins, `寫 ${t.id}`, (done, early, b) => {
+  startBusy('code', mins, eating ? `邊吃便當邊寫 ${t.id}` : `寫 ${t.id}`, (done, early, b) => {
     if (b.ctxSwitch) { const lost = Math.min(COST.ctxSwitch, Math.round(done)); done -= lost; if (lost) note(`寫 ${t.id} 寫到一半被打斷，回神又花了 ${lost} 分鐘`, 'b'); }
+    if (eating) { done *= 0.7; S.ate = true; S.en = Math.min(100, S.en + 6); note('邊吃便當邊寫 code，吃完才發現便當是什麼口味都不記得'); }
     t.prog = Math.min(t.est, t.prog + Math.round(done));
     if (t.prog >= t.est) { t.status = 'review'; note(`${t.id} 寫完了，去找阿凱 code review`, 'g'); toast(`${t.id} 寫完了 → 找阿凱 review`); }
   });
@@ -887,7 +941,7 @@ function atBoss() {
   if (p.type === 'status') {
     const done = S.tickets.filter(t => t.status === 'done').length, risky = S.tickets.filter(t => t.ver > 1 && t.status !== 'done').length;
     const opts = [`「${done} 張上線、${S.tickets.length - done} 張進行中；${risky ? `${risky} 張因為需求變更可能會晚，我已經跟 PM 在對範圍` : '目前沒有風險'}」`, '「都很順，應該沒問題」', '「還在寫」', '把每個 function 的實作細節講一遍'];
-    runSteps('boss', [{ type: 'single', title: '大衛：「進度怎麼樣？等下要跟老闆報告」', opts, a: 0, why: '回報講結論：完成多少、還剩多少、有什麼風險、你打算怎麼處理。壞消息早點講比晚點講好。' }], res => {
+    runSteps('boss', [{ type: 'single', title: p.data.hot ? `大衛：「${p.data.hot} 怎麼還沒上？業務在我這邊跳腳。」` : '大衛：「進度怎麼樣？等下要跟老闆報告」', opts, a: 0, why: '回報講結論：完成多少、還剩多少、有什麼風險、你打算怎麼處理。壞消息早點講比晚點講好。' }], res => {
       clearPing('boss');
       if (res[0].ok) add(5, '進度回報清楚'); else add(-3, '主管聽完還是不知道進度');
       startBusy('talk', COST.status, '跟主管報告');
@@ -915,11 +969,6 @@ function atMeet() {
 function atCoffee() {
   if (S.coffee >= 3) return info('me', '咖啡機', '你已經喝了三杯，手開始抖了。今天不要再喝了。');
   startBusy('coffee', COST.coffee, '泡咖啡', () => { S.coffee++; S.en = Math.min(100, S.en + 18); S.bl = Math.min(100, S.bl + 15); note(`喝了第 ${S.coffee} 杯咖啡 ☕`); });
-}
-function atBento() {
-  if (S.ate) return info('me', '便當', '已經吃過了。');
-  if (S.t < LUNCH.open) return info('me', '便當', `還沒到午餐時間（${hhmm(LUNCH.open)} 開飯）。`);
-  startBusy('eat', COST.lunch, '吃便當', () => { S.ate = true; S.en = Math.min(100, S.en + 12); add(S.t <= LUNCH.late ? 2 : 0, S.t <= LUNCH.late ? '準時吃午餐' : '終於吃到午餐了'); });
 }
 function atWC() { startBusy('wc', COST.wc, '上廁所', () => { S.bl = 0; }); }
 function atMonitor() {
@@ -1081,7 +1130,7 @@ function chooseLevel() {
   openCard(`<div class="title"><div class="logo">&lt;/&gt;</div><h1>上線不要說應該沒問題</h1><p class="tag">工程師上班模擬</p></div>
     <p class="lead">工程師圈的老迷信：部署前說出「應該沒問題」，當天一定出事。今天請管好你的嘴。</p>
     <h4>選擇需求變更的頻率</h4><p class="hint">需求改得越兇，白天越難上線，晚上和週末值班也越常被 page。</p><div class="lvs">${lv}</div>
-    <p class="fine">非官方、非商業的練習作品。玩法結構參考「值班模擬」類遊戲，內容與程式為獨立製作。</p>`);
+    <p class="fine">非官方、非商業的練習作品。玩法結構參考「值班模擬」類遊戲，內容與程式為獨立製作。　<a href="../../">← 回遊戲目錄</a></p>`);
   card.querySelectorAll('[data-lv]').forEach(b => b.onclick = () => intro(LEVELS[b.dataset.lv], b.dataset.mode));
 }
 function intro(lv, mode) {
@@ -1117,9 +1166,10 @@ function intro(lv, mode) {
       <ul class="rules"><li>點地圖走路，走到人或東西旁邊就會互動（鍵盤：方向鍵／WASD 移動、E 互動、P 暫停）。</li>
       <li>有人頭上冒 <b>!</b> 就是在找你，寫 code 會被打斷。超過時間會扣分。監控牆變紅要在 15 分鐘內到機房處理（手上的事會被打斷）。</li>
       <li>PM 會來改需求：<b>${lv.freq}</b>。先問清楚再動手，能協商就協商。</li>
-      ${lv.urgent ? '<li>⚡ <b>急件</b>會插進來：先去找安娜問清楚範圍，2 小時內要上線。急件可以不等部署窗口直接緊急部署，QA 也會先測。</li>' : ''}
+      ${lv.urgent ? '<li>⚡ <b>急件</b>會插進來：先去找安娜問清楚範圍，2 小時內要上線。業務會一直打分機來催，每通都會打斷你。急件可以不等部署窗口直接緊急部署，QA 也會先測。</li>' : ''}
       ${lv.big ? `<li>📅 ${hhmm(lv.big.at)} 會來一張<b>明天就要</b>的大單。先跟安娜把範圍砍到 demo 需要的部分；18:00 做不完就得加班，不然 demo 會開天窗。</li>` : ''}
-      <li>記得喝咖啡、吃午餐、上廁所。精神歸零就會趴在鍵盤上。</li></ul></div>
+      <li>桌上有<b>分機</b>：找安娜、大衛、小芸可以直接打，不用走過去。分機響了要回座位接。</li>
+      <li>記得喝咖啡、吃便當（12:00 送到桌上）、上廁所。精神歸零就會趴在鍵盤上。</li></ul></div>
       <div class="acts"><button class="btn primary" id="go">開始上班 ▶</button><button class="btn" id="back">換關卡</button></div>`;
   openCard(body);
   $('go').onclick = () => {
@@ -1435,13 +1485,18 @@ function drawOffice(now) {
   island(330, 340, 4, [cw(4), null, cw(5), cw(6)], [null, null, who('rev', NPC.rev, { headphones: true }), cw(7)],
     (r, i) => r === 1 && i === 1 ? (coding ? '#9BE38F' : '#5FB3E6') : r === 1 && i === 2 ? '#F5C26B' : null);
   ctx.fillStyle = '#FFE27A'; ctx.fillRect(500, 386, 9, 9);   // 你螢幕上的便利貼
+  if (S && S.t >= LUNCH.open && !S.ate) { ctx.fillStyle = '#E5484D'; rr(436, 380, 22, 15, 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.fillRect(445, 380, 3, 15); }   // 桌上的便當
+  // 你桌上的分機：響的時候會震
+  const ring = S && S.ext, jig = ring ? Math.sin(now / 40) * 1.5 : 0;
+  ctx.fillStyle = ring ? '#E5484D' : '#3A4558'; rr(492 + jig, 372, 16, 11, 3); ctx.fill(); ctx.fillStyle = '#C8CDD4'; ctx.fillRect(495 + jig, 374, 10, 3);
+  if (ring) bubble(500, 352, true, now, '☎');
   nameTag('安娜 PM', 367, 46); nameTag('小芸 QA', 462, 46); nameTag('大衛 主管', 738, 146);
   nameTag('你', 472, 434); nameTag('阿凱', 567, 434);
   // 茶水間（開放角落）：流理台、咖啡機、便當
   ctx.fillStyle = '#C9D1DA'; rr(130, 490, 170, 30, 3); ctx.fill();
   ctx.fillStyle = '#3A3F48'; rr(146, 488, 28, 30, 4); ctx.fill(); ctx.fillStyle = '#C8743A'; ctx.fillRect(154, 506, 12, 8);
   if (S && S.busy && S.busy.kind === 'coffee') steam(156, 500, now);
-  if (!S || !S.ate) { ctx.fillStyle = '#E5484D'; rr(240, 494, 30, 20, 3); ctx.fill(); ctx.fillStyle = '#fff'; ctx.fillRect(253, 494, 4, 20); }
+
   ctx.fillStyle = '#E8ECF0'; ctx.strokeStyle = '#9AA6B4'; ctx.lineWidth = 1.5; rr(276, 486, 22, 32, 3); ctx.fill(); ctx.stroke();
   text('茶水間', 215, 470, 12, C.label, 'center', 700);
   // 廁所
@@ -1625,6 +1680,10 @@ function updateUI() {
     phone.classList.toggle('ring', !!ring);
   } else phone.hidden = true;
   $('btnLeave').hidden = !(S.ot && !S.ended);
+  const hot = !atHome() && S.started && !S.ended ? S.tickets.filter(t => t.urgent && t.status !== 'done').sort((a, b) => a.due - b.due)[0] : null;
+  const chip = $('hotChip');
+  chip.hidden = !hot;
+  if (hot) { const r = hot.due - S.t; chip.textContent = r >= 0 ? `⚡ ${hot.id} 剩 ${dur(r)}` : `⚡ ${hot.id} 超時 ${dur(-r)}`; chip.className = `hot${r < 30 ? ' bad' : ''}`; }
   $('btnWait').hidden = !(atHome() && S.started && !S.ended);
   if (atHome()) updateNightPanel(); else updateDayPanel();
   $('feed').innerHTML = S.log.slice(0, 14).map(l => `<li class="${l.kind}"><time>${hhmm(l.t)}</time>${esc(l.text)}</li>`).join('');
@@ -1639,6 +1698,7 @@ function updateDayPanel() {
       ${flag}${t.status === 'dev' || t.status === 'todo' ? `<div class="tk-bar"><i style="width:${pct}%"></i></div><div class="tk-sub">${t.prog} / ${t.est} 分鐘</div>` : t.status === 'testing' ? `<div class="tk-sub">預計 ${hhmm(t.qaAt)} 測完</div>` : ''}</div>`;
   }).join('');
   const todo = [];
+  if (S.ext) todo.push({ u: true, t: `☎ 分機在響：${S.ext.who}（回座位接，${hhmm(S.ext.dl)} 前）` });
   if (S.ot) todo.push({ u: true, t: `加班中：可以隨時按右上角「下班」（最晚 ${hhmm(OT_END)}）` }, { t: `辦公室還有：${stillHere().join('、') || '只剩你'}` });
   if (S.alert) todo.push({ u: true, t: `🚨 監控告警：到機房（${hhmm(S.alert.dl)} 前）` });
   S.tickets.filter(t => t.urgent && t.status !== 'done' && !t.late).forEach(t => todo.push({ u: t.due - S.t < 30, t: `⚡ ${t.id} 要在 ${hhmm(t.due)} 前上線（${STATUS[t.status]}）` }));
@@ -1648,7 +1708,7 @@ function updateDayPanel() {
   if (rv.length) todo.push({ t: `找阿凱 review：${rv.join('、')}` });
   if (qa.length) todo.push({ t: `交給小芸測試：${qa.join('、')}` });
   if (rd.length) todo.push({ u: S.t >= DEPLOY.close - 30, t: S.t < DEPLOY.open ? `可上線：${rd.join('、')}（${hhmm(DEPLOY.open)} 後部署）` : `回座位部署：${rd.join('、')}（${hhmm(DEPLOY.close)} 前）` });
-  if (!S.ate && S.t >= LUNCH.open) todo.push({ u: S.t > LUNCH.late, t: S.t > LUNCH.late ? '還沒吃午餐，精神掉得很快' : `吃午餐（${hhmm(LUNCH.late)} 前）` });
+  if (!S.ate && S.t >= LUNCH.open) todo.push({ u: S.t > LUNCH.late, t: S.t > LUNCH.late ? '便當還在桌上，精神掉得很快' : `🍱 便當在你桌上（${hhmm(LUNCH.late)} 前吃）` });
   if (S.bl >= 70) todo.push({ u: S.bl >= 90, t: '去廁所' });
   if (S.en < 35) todo.push({ u: S.en < 20, t: '精神快不行了：喝咖啡或吃飯' });
   $('todo').innerHTML = todo.length ? todo.map(x => `<li class="${x.u ? 'u' : ''}">${esc(x.t)}</li>`).join('') : '<li class="none">目前沒有人在找你，專心寫 code 吧</li>';

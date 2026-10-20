@@ -185,3 +185,8 @@ ul.mono { font-family: var(--f-mono); font-size: 13px; background: #1B212B; colo
 .stats tr.txt td:last-child { font-family: var(--f-body); }
 .lvbtn.weekend { background: #E6F3EA; border-color: #9CCFAE; }
 .lvbtn.weekend:hover { background: #D6ECDD; }
+.fine a { color: #2F8FCB; }
+.hot { font-family: var(--f-mono); font-weight: 700; font-size: 15px; padding: 6px 12px; border-radius: 8px; background: #3A2E1A; color: var(--warn); border: 1px solid var(--warn); }
+.hot.bad { background: #3A2429; color: #FF8A8E; border-color: var(--bad); animation: hotpulse 1s infinite alternate; }
+@keyframes hotpulse { from { opacity: 1; } to { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .hot.bad { animation: none; } }
