@@ -169,6 +169,17 @@ const NPC = {
 const PING_LABEL = { plan: '週末計畫', show: '陪看一集劇', handoff: '交接給白天 on-call', urgent: '⚡ 急件', big: '📅 明天就要', change: '需求變更', status: '問進度', helpReview: '幫看 PR', bounce: 'QA 退件', report: '事故回報', standup: '站會開始' };
 const STATUS = { todo: '待開發', dev: '開發中', review: '待 review', qa: '待交測', testing: '測試中', ready: '可上線', done: '已上線' };
 
+/* ================= 角色設定 =================
+   原始碼裡另一半一律寫「小雯」，指另一半的代名詞寫「〔她〕」；顯示前用 L() 換成玩家設定的名字和代名詞。 */
+const GENDERS = { f: '女', m: '男', x: '不說' };
+const DEFAULT_PARTNER = { f: '小雯', m: '阿哲', x: '小安' };
+const SET = (() => { const d = { me: 'x', pg: 'f', pname: '' }; try { return Object.assign(d, JSON.parse(localStorage.getItem('dev-sim-settings') || '{}')); } catch (e) { return d; } })();
+function saveSettings() { try { localStorage.setItem('dev-sim-settings', JSON.stringify(SET)); } catch (e) { /* 無痕模式之類的，略過 */ } }
+const cleanName = v => String(v || '').replace(/[<>&"'`\\]/g, '').trim().slice(0, 8);
+const partnerName = () => cleanName(SET.pname) || DEFAULT_PARTNER[SET.pg];
+const partnerPron = () => SET.pg === 'm' ? '他' : SET.pg === 'f' ? '她' : partnerName();
+const L = s => String(s).replace(/小雯/g, partnerName()).replace(/〔她〕/g, partnerPron());
+
 /* ================= 遊戲狀態 ================= */
 let LV = LEVELS.freeze, MODE = 'day';
 let S = null;
@@ -192,7 +203,7 @@ function freshState(lv, mode) {
     started: false, ended: false, paused: false,
   };
   if (mode === 'day') {
-    s.tickets = shuffle(TICKET_POOL).slice(0, lv.tickets).map((p, i) => newTicketObj(101 + i, p.title, p.est, p.changes));
+    s.tickets = shuffle(TICKET_POOL).slice(0, lv.tickets).map((p, i) => Object.assign(newTicketObj(101 + i, p.title, p.est, p.changes), { heavy: !!p.heavy }));
     s.nextId = 101 + lv.tickets;
     s.nextChange = lv.changeEvery ? lv.firstChange : lv.changeRand ? RND(...lv.changeRand) : Infinity;
     s.nextUrgent = lv.urgent ? lv.urgent.first : Infinity;
@@ -206,11 +217,12 @@ function freshState(lv, mode) {
       en: 72, bl: 35, page: null, pageQ: [], pages: [], lines: [], lineLog: [], dnd: null,
       sleepMin: 0, showered: false, escalated: 0, woke: 0,
       fam: FAMILY.start, famLog: [], kicked: false, wokePartner: 0, akai: 0, pagesDone: 0, ateTogether: false,
+      phoneBat: RND(25, 55), phoneChg: false, phoneAt: 'me', lapBat: RND(5, 70), lapChg: false, missed: 0, troubles: [],
       delivery: { at: TN(20, 40), stage: 'coming', dl: 0 },
       nightEv: nightSchedule(lv),
     });
     if (mode === 'weekend') Object.assign(s, {
-      en: 60, bl: 30, dnd: null, delivery: { stage: 'none' }, nightEv: weekendSchedule(lv),
+      en: 60, bl: 30, dnd: null, delivery: { stage: 'none' }, nightEv: weekendSchedule(lv), phoneBat: RND(35, 70),
       outing: null, plans: [], resumeOut: null, partnerBackAt: 0,
     });
   }
@@ -263,9 +275,15 @@ function newTicketObj(n, title, est, changes) {
 }
 const ticket = id => S.tickets.find(t => t.id === id);
 
-function note(text, kind) { S.log.unshift({ t: S.t, text, kind: kind || '' }); if (S.log.length > 60) S.log.pop(); dirty = true; }
-function add(pts, text) { S.score += pts; if (pts > 0) S.stats.good++; if (pts < 0) S.stats.bad++; if (text) note(`${text}（${pts > 0 ? '+' : ''}${pts}）`, pts > 0 ? 'g' : pts < 0 ? 'b' : ''); }
-function toast(text, ms) { S.toast = { text, until: performance.now() + (ms || 2600) }; }
+function note(text, kind) { S.log.unshift({ t: S.t, text: L(text), kind: kind || '' }); if (S.log.length > 60) S.log.pop(); dirty = true; }
+function add(pts, text) { S.score += pts; if (pts) { (S.ledger = S.ledger || []).push({ t: S.t, pts, text: L(text || '') }); scorePop(pts); } if (pts > 0) S.stats.good++; if (pts < 0) S.stats.bad++; if (text) note(`${text}（${pts > 0 ? '+' : ''}${pts}）`, pts > 0 ? 'g' : pts < 0 ? 'b' : ''); }
+/* 分數旁邊跳出 +3／-2，讓每一次加扣分都看得到 */
+function scorePop(pts) {
+  const el = $('scoreDelta'); if (!el) return;
+  el.textContent = (pts > 0 ? '+' : '') + pts; el.className = pts > 0 ? 'up' : 'down';
+  void el.offsetWidth; el.classList.add('show');
+}
+function toast(text, ms) { S.toast = { text: L(text), until: performance.now() + (ms || 2600) }; }
 
 /* ================= 上班：呼叫（NPC 頭上的驚嘆號） ================= */
 function ping(npc, type, dl, data) {
@@ -364,6 +382,7 @@ function applyChange(t, d, fuzzy) {
   t.pendingChange = false;
   S.stats.changes++;
   t.ver++; t.fuzzy = t.fuzzy || fuzzy;
+  if (HEAVY_RE.test(d.text || '') && !t.heavy) { t.heavy = true; note(`${t.id} 加了新東西，現有設備可能跑不動`, 'b'); }
   if (t.status === 'done') {
     const nt = newTicketObj(S.nextId++, `${t.title}（追加 v${t.ver}）`, d.add + 10, []);
     nt.fuzzy = fuzzy;
@@ -398,7 +417,7 @@ function addBig(d, clear) {
 /* ================= 上班：線上告警 ================= */
 function fireAlert(afterDeploy) {
   if (S.alert) { S.timers.push({ t: S.t + 20, kind: 'alert', afterDeploy }); return; }
-  const inc = afterDeploy ? INCIDENTS.find(i => i.afterDeploy) : draw1('dayInc', INCIDENTS.filter(i => !i.afterDeploy));
+  const inc = afterDeploy === 'heavy' ? HEAVY_INCIDENT : afterDeploy ? INCIDENTS.find(i => i.afterDeploy) : draw1('dayInc', INCIDENTS.filter(i => !i.afterDeploy));
   S.alert = { inc, dl: S.t + COST.alertAck, esc: 0 };
   note(`🚨 監控告警：${inc.title}`, 'b');
   toast('🚨 監控告警！到機房看監控牆', 3500);
@@ -412,15 +431,44 @@ function firePage(inc) {
   S.page = { inc, stage: 'ring', dl: S.t + 5, esc: 0, at: S.t };
   S.pages.push({ inc, at: S.t, result: '處理中' });
   note(`📟 Page：${inc.title}`, 'b');
-  if (S.outing) return pageWhileOut();
-  toast('📟 page 響了！按「接 page」或 T', 4000);
+  if (S.outing && !S.outing.phoneOff && S.phoneBat > 0) return pageWhileOut();
+  pageRings();
+}
+/* 有沒有聽到 page：手機沒電、放在客廳、洗澡、睡太沉都可能沒聽到 */
+const cantHearNow = () => S.phoneBat <= 0 || (S.busy && S.busy.kind === 'sleep' && S.phoneAt === 'living') || (S.outing && S.outing.phoneOff);
+function cantHear() {
+  if (S.phoneBat <= 0) return '手機沒電了';
+  if (S.outing && S.outing.phoneOff) return '手機關機中';
+  const b = S.busy && S.busy.kind;
+  if (b === 'sleep' && S.phoneAt === 'living') return '手機放在客廳充電';
+  if (b === 'shower' && Math.random() < 0.5) return '在洗澡，水聲太大';
+  if (b === 'sleep' && S.sleepMin - (S.napStart || 0) > 120 && Math.random() < 0.25) return '睡太沉了';
+  return null;
+}
+function pageRings() {
+  const why = cantHear();
+  if (why) { S.missed++; note(`📟 page 在響……但你沒聽到（${why}）`, 'b'); return; }
+  toast('📟 page 響了！', 3000);
   if (S.busy && S.busy.kind === 'sleep') { finishBusy(true); add(-12, '被 page 吵醒了 😵'); wakeHit('被 page 吵醒'); wakePartner('page 也把小雯吵醒了'); }
-  else if (S.busy && (S.busy.kind === 'rest' || S.busy.kind === 'tv' || S.busy.kind === 'idle')) finishBusy(true);
+  else if (S.busy && ['rest', 'tv', 'idle', 'shower'].includes(S.busy.kind)) finishBusy(true);
   dirty = true;
+  if (!S.busy && ov.hidden) ringPrompt();
+}
+/* page 響了：接、不接、轉給 secondary */
+function ringPrompt() {
+  const p = S.page; if (!p || p.stage !== 'ring') return;
+  runSteps('page', [{ type: 'choice', keep: true, title: `📟 page 響了：${p.inc.title}`, html: `<small>${p.esc ? `已經重撥第 ${p.esc} 次了。` : ''}5 分鐘內沒 ack 會一直重撥，第三次自動升級給 secondary。</small>`, opts: ['接起來（ack）', '讓它響，假裝沒聽到', '按掉，轉給 secondary 阿凱'] }], res => {
+    const i = res[0].pick;
+    if (i === 0) return ackPage();
+    if (i === 1) return note('你看著手機在響，把它翻過去蓋著', 'b');
+    S.escalated++; add(-10, '直接把 page 轉給阿凱'); closePage('轉給阿凱');
+  });
 }
 /* ---- 假日：出門時被 page ---- */
 function startOuting(plan, laptop, phoneOff, mins) {
   S.outing = { plan, laptop, phoneOff, from: S.t };
+  S.phoneChg = false; S.phoneAt = 'me';
+  if (laptop) S.lapChg = false;
   S.me = { x: HS.door.x, y: HS.door.y }; S.path = [];
   note(`跟小雯${plan.label}${laptop ? '（背著筆電）' : ''}${phoneOff ? '（手機關機）' : ''}`);
   startBusy('out', mins, plan.label, (done, early) => {
@@ -451,7 +499,7 @@ function pageWhileOut() {
   S.outing = null; S.partnerBackAt = S.t + 60;
   S.plans.push({ label: o.plan.label, result: '被 page 打斷，丟下小雯趕回家' });
   famChange(-2, `${o.plan.label}到一半丟下小雯趕回家`);
-  info('page', `${o.plan.label}到一半，page 響了`, '沒帶筆電，只能趕回家。小雯說她自己吃完再回去。', () => startBusy('commute', 30, '趕回家', () => { S.me = { x: HS.door.x, y: HS.door.y }; note('到家了，快去書房開筆電'); }));
+  info('page', `${o.plan.label}到一半，page 響了`, '沒帶筆電，只能趕回家。小雯說〔她〕自己吃完再回去。', () => startBusy('commute', 30, '趕回家', () => { S.me = { x: HS.door.x, y: HS.door.y }; note('到家了，快去書房開筆電'); }));
 }
 /* 精神條一節 = 10%。第 n 次被叫醒扣 1 + 0.5 × (n − 1) 節 */
 function wakeHit(why) {
@@ -607,7 +655,7 @@ function tickDay(prev, dm) {
   if (S.bl >= 100) drain *= 1.5;
   if (S.ot) drain *= 1.5;
   S.en = Math.max(0, S.en - drain * dm);
-  if (S.bl >= 100 && Math.floor(prev / 10) !== Math.floor(S.t / 10)) S.score -= 1;
+  if (S.bl >= 100 && Math.floor(prev / 10) !== Math.floor(S.t / 10)) add(-1, '憋尿太久');
 }
 function tickNight(prev, dm) {
   while (S.evI < S.nightEv.length && S.nightEv[S.evI].t <= S.t) {
@@ -628,8 +676,23 @@ function tickNight(prev, dm) {
   if (p && p.stage === 'ring' && S.t > p.dl) {
     p.esc++;
     if (p.esc >= 3) { S.escalated++; add(-12, 'page 沒人接，升級到 secondary：阿凱被叫醒了'); closePage('升級給阿凱'); }
-    else { add(-8, `page 沒有 ack（第 ${p.esc} 次重撥）`); p.dl = S.t + 5; toast('📟 page 又響了！按「接 page」或 T', 3500); }
+    else { add(-8, `page 沒有 ack（第 ${p.esc} 次重撥）`); p.dl = S.t + 5; pageRings(); }
   } else if (p && p.stage === 'acked' && S.t > p.dl) { add(-5, 'ack 了卻遲遲沒上線處理'); p.dl = S.t + 10; }
+  // 手機、筆電電量
+  const was = S.phoneBat;
+  S.phoneBat = Math.max(0, Math.min(100, S.phoneBat + (S.phoneChg ? COST.phoneCharge : -COST.phoneDrain) * dm / 60));
+  if (was > 20 && S.phoneBat <= 20) { note(`🔋 手機剩 ${Math.round(S.phoneBat)}%`, 'b'); toast('🔋 手機快沒電了'); }
+  if (was > 0 && S.phoneBat <= 0) { note('📵 手機沒電關機了，page 響了也聽不到', 'b'); toast('📵 手機沒電了！'); }
+  if (S.lapChg) S.lapBat = Math.min(100, S.lapBat + COST.laptopCharge * dm / 60);
+  else if (S.busy && S.busy.kind === 'fix' && S.busy.laptop) {
+    S.lapBat = Math.max(0, S.lapBat - COST.laptopDrain * dm / 60);
+    if (S.lapBat <= 0) {
+      const out = !!S.outing || !!S.resumeOut;
+      S.busy.left += out ? COST.findOutlet : COST.laptopBoot; S.busy.label = out ? '找插座…' : '筆電沒電，插電重開機';
+      if (out) famChange(-1, '在外面筆電沒電，拉著小雯找插座'); else note('💻 筆電處理到一半沒電關機了，插上充電器重開', 'b');
+      S.lapChg = !out; S.lapBat = out ? 40 : 5;
+    }
+  }
   const sleeping = S.busy && S.busy.kind === 'sleep';
   if (sleeping && S.sleepLat > 0) {
     // 還沒睡著：不算睡眠、不回精神
@@ -642,7 +705,7 @@ function tickNight(prev, dm) {
     if (!S.ate && (isWeekend() ? (S.t > TW(13, 30) && S.t < TW(18, 0)) || S.t > TW(20, 0) : S.t > TN(22, 0))) drain *= 2;
     if (S.bl >= 100) drain *= 1.5;
     S.en = Math.max(0, S.en - drain * dm);
-    if (S.bl >= 100 && Math.floor(prev / 10) !== Math.floor(S.t / 10)) S.score -= 1;
+    if (S.bl >= 100 && Math.floor(prev / 10) !== Math.floor(S.t / 10)) add(-1, '憋尿太久');
   }
   if (sleeping && S.bl >= 95) { finishBusy(true); note('被尿意憋醒了'); }
   if (isWeekend() && prev < WEEKEND_WAKE && S.t >= WEEKEND_WAKE) { if (S.busy && S.busy.kind === 'sleep') finishBusy(true); note('☀ 08:30 自然醒，週六早安'); }
@@ -650,11 +713,12 @@ function tickNight(prev, dm) {
   if (isNight() && prev < ALARM && S.t >= ALARM) { if (S.busy && S.busy.kind === 'sleep') finishBusy(true); note('⏰ 07:30 鬧鐘響了'); toast('⏰ 早安。08:00 交接給白天的 on-call'); }
 }
 function qaResult(t) {
+  const old = t.heavy && !t.lite && Math.random() < 0.5;   // 舊測試機跑不動
   const bugP = t.bug ? 0.9 : t.fuzzy ? 0.55 : 0.12;
-  if (Math.random() < bugP) {
+  if (old || Math.random() < bugP) {
     t.status = 'dev'; t.prog = Math.max(0, t.est - RND(...COST.bugFix)); t.bug = false; t.fuzzy = false;
     S.stats.bounces++;
-    ping('qa', 'bounce', 30, { tid: t.id, text: pick(BUG_TEXTS) });
+    ping('qa', 'bounce', 30, { tid: t.id, text: old ? OLD_DEVICE.text : pick(BUG_TEXTS), old });
   } else {
     t.status = 'ready';
     note(`${t.id} QA 測試通過，可以上線`, 'g');
@@ -665,7 +729,7 @@ function qaResult(t) {
 /* ================= 卡片（對話框） ================= */
 let MODAL = null;
 function whoHead(k) { const n = NPC[k] || NPC.sys; return `<div class="who"><span class="badge" style="background:${n.color}">${n.tag}</span><b>${n.name}</b><span class="when">${S && S.started ? hhmm(S.t) : ''}</span></div>`; }
-function openCard(html) { for (const k in keys) keys[k] = false; card.innerHTML = html; ov.hidden = false; card.scrollTop = 0; const b = card.querySelector('.btn.primary,.btn'); b && b.focus({ preventScroll: true }); }
+function openCard(html) { for (const k in keys) keys[k] = false; card.innerHTML = L(html); ov.hidden = false; card.scrollTop = 0; const b = card.querySelector('.btn.primary,.btn'); b && b.focus({ preventScroll: true }); }
 function closeCard() { ov.hidden = true; MODAL = null; dirty = true; }
 function info(who, title, html, after, btn) {
   MODAL = { kind: 'info' };
@@ -799,11 +863,33 @@ function atDesk() {
   items.push({ label: '先不要', sub: '' });
   menu('me', '你的電腦', '要做什麼？寫 code 時點一下地圖可以先停下來。', items);
 }
+/* 重的單：你那台筆電跑不動，第一次碰到要決定怎麼辦 */
+function pcFactor(t) {
+  if (!t.heavy) return 1;
+  if (S.pc === 'cloud') return S.t >= S.cloudAt ? 1 : 0.6;
+  if (S.pc === 'borrow') return here('rev') ? 1 : 0.6;
+  return S.pc === 'squeeze' ? 0.75 : 0.6;
+}
+function askPC(t, then) {
+  runSteps('me', [{ type: 'choice', keep: true, title: `${t.id} 要跑新的 build，公司配的 8GB 筆電風扇在尖叫，編譯跑了 12 分鐘還沒好`, html: '<small>這張單比較重，現有設備跑不太動。</small>', opts: PC_OPTS.opts.map((o, i) => i === 2 && !here('rev') ? '借阿凱的桌機（他已經下班了）' : o) }], res => {
+    const k = PC_OPTS.key[res[0].pick];
+    if (k === 'borrow' && !here('rev')) { S.pc = 'boss'; return info('me', '阿凱已經下班了', '桌機上鎖了。只能硬撐。', then); }
+    S.pc = k;
+    if (k === 'squeeze') { note('關掉 Chrome、Slack、Docker 硬撐（重的單效率 75%）'); return then(); }
+    if (k === 'boss') { add(-1, '申請新電腦'); return info('boss', '大衛', '「好，我送簽呈。採購流程大概三個月。」<br><small>今天還是用這台。重的單效率 60%。</small>', () => startBusy('talk', 10, '填申請單', then)); }
+    if (k === 'borrow') { add(-1, '阿凱的桌機被你借走了'); return info('rev', '阿凱', '「蛤……好啦，你先用。我下班前要拿回來喔。」<br><small>阿凱下班前，重的單效率正常。</small>', then); }
+    S.cloudAt = S.t + COST.cloudDev;
+    note(`申請雲端開發機，${hhmm(S.cloudAt)} 開好`);
+    info('me', '雲端開發機', `IT 說 ${COST.cloudDev} 分鐘內開好。在那之前只能先用這台慢慢跑。`, then);
+  });
+}
 function code(t, eating) {
+  if (t.heavy && !S.pc) return askPC(t, () => code(t, eating));
   if (t.status === 'todo') t.status = 'dev';
   const mins = Math.min(COST.codeBlock, t.est - t.prog);
-  startBusy('code', mins, eating ? `邊吃便當邊寫 ${t.id}` : `寫 ${t.id}`, (done, early, b) => {
+  startBusy('code', mins, (eating ? `邊吃便當邊寫 ${t.id}` : `寫 ${t.id}`) + (pcFactor(t) < 1 ? '（電腦好慢）' : ''), (done, early, b) => {
     if (b.ctxSwitch) { const lost = Math.min(COST.ctxSwitch, Math.round(done)); done -= lost; if (lost) note(`寫 ${t.id} 寫到一半被打斷，回神又花了 ${lost} 分鐘`, 'b'); }
+    const f = pcFactor(t); if (f < 1) done *= f;
     if (eating) { done *= 0.7; S.ate = true; S.en = Math.min(100, S.en + 6); note('邊吃便當邊寫 code，吃完才發現便當是什麼口味都不記得'); }
     t.prog = Math.min(t.est, t.prog + Math.round(done));
     if (t.prog >= t.est) { t.status = 'review'; note(`${t.id} 寫完了，去找阿凱 code review`, 'g'); toast(`${t.id} 寫完了 → 找阿凱 review`); }
@@ -822,8 +908,9 @@ function deploy(ready) {
         if (t.urgent && !t.late) add(8, `⚡ ${t.id} 急件準時上線`);
       });
       if (S.ot && S.tickets.every(t => t.status === 'done')) { note('全部上線了，終於可以回家', 'g'); return endShift(false); }
-      const risk = 0.15 + (p === 1 ? 0.45 : 0) + (S.ot ? 0.15 : 0);  // 下班時間部署比較容易出事
-      if (Math.random() < risk) S.timers.push({ t: S.t + RND(4, 12), kind: 'alert', afterDeploy: true });
+      const heavy = ready.some(t => t.heavy && !t.lite);
+      const risk = 0.15 + (p === 1 ? 0.45 : 0) + (S.ot ? 0.15 : 0) + (heavy ? 0.3 : 0);  // 下班時間部署、新東西上舊機器，都比較容易出事
+      if (Math.random() < risk) S.timers.push({ t: S.t + RND(4, 12), kind: 'alert', afterDeploy: heavy ? 'heavy' : true });
     });
   });
 }
@@ -864,9 +951,11 @@ function atQA() {
   const p = S.pings.qa;
   if (p) {
     const t = ticket(p.data.tid);
-    runSteps('qa', [{ type: 'single', title: `小芸：「${t.id} ${p.data.text}，我退回去囉」`, html: '你怎麼回？', opts: QA_REPLY.opts, a: QA_REPLY.a, why: QA_REPLY.why }], res => {
+    const R = p.data.old ? OLD_DEVICE : QA_REPLY;
+    runSteps('qa', [{ type: 'single', title: `小芸：「${t.id} ${p.data.text}，我退回去囉」`, html: '你怎麼回？', opts: R.opts, a: R.a, why: R.why }], res => {
       clearPing('qa');
-      if (res[0].ok) add(4, `${t.id} 找到 bug 原因`); else { add(-3, `${t.id} 跟 QA 來回拉扯`); t.est += 15; }
+      if (res[0].ok) { add(4, p.data.old ? `${t.id} 幫舊裝置做了降級` : `${t.id} 找到 bug 原因`); if (p.data.old) t.lite = true; }
+      else { add(-3, `${t.id} 跟 QA 來回拉扯`); t.est += 15; }
       startBusy('talk', COST.bounceTalk, '跟小芸重現 bug', () => handoff());
     });
     return;
@@ -988,13 +1077,16 @@ function atBed() {
   const sleep = () => {
     S.sleepLat = Math.min(COST.fallAsleep + COST.fallAsleepWoke * S.woke, 50);
     const until = isWeekend() ? (S.t < WEEKEND_WAKE ? WEEKEND_WAKE : WEEKEND_END) : ALARM;
-    startBusy('sleep', Math.max(5, until - S.t), S.woke ? '翻來覆去睡不著…' : '躺著準備睡…', () => { if (S.napStart !== undefined) note(`睡了 ${dur(S.sleepMin - S.napStart)}`); S.napStart = undefined; });
+    startBusy('sleep', Math.max(5, until - S.t), S.woke ? '翻來覆去睡不著…' : '躺著準備睡…', () => { if (S.napStart !== undefined) note(`睡了 ${dur(S.sleepMin - S.napStart)}`); S.napStart = undefined; S.phoneAt = 'me'; });
     S.napStart = S.sleepMin;
   };
-  if (S.dnd !== null) return sleep();
-  runSteps('home', [{ type: 'choice', keep: true, title: '睡前，手機要開勿擾模式嗎？', html: 'PagerDuty 可以設成勿擾模式下也會響。', opts: ['開勿擾，只讓 on-call 的 page 響', '不用，所有通知照常響'] }], res => {
-    S.dnd = res[0].pick === 0;
-    if (S.dnd) add(2, '開了勿擾模式，只放行 page');
+  const steps = [{ type: 'choice', keep: true, title: `睡前，手機要放哪？（剩 ${Math.round(S.phoneBat)}%）`, opts: ['放床頭充電', '放客廳充電，才不會被吵', '放床頭，不充電'] }];
+  if (S.dnd === null) steps.push({ type: 'choice', keep: true, title: '手機要開勿擾模式嗎？', html: 'PagerDuty 可以設成勿擾模式下也會響。', opts: ['開勿擾，只讓 on-call 的 page 響', '不用，所有通知照常響'] });
+  runSteps('home', steps, res => {
+    const w = res[0].pick;
+    S.phoneAt = w === 1 ? 'living' : 'bed'; S.phoneChg = w !== 2;
+    if (w === 1) note('手機放在客廳充電……今晚 page 響了你也聽不到', 'b');
+    if (res[1]) { S.dnd = res[1].pick === 0; if (S.dnd) add(2, '開了勿擾模式，只放行 page'); }
     sleep();
   });
 }
@@ -1007,7 +1099,13 @@ function atLaptop() {
       startBusy('talk', 10, '寫交接', () => info('rev', '阿凱', res[0].ok ? '「收到，昨晚辛苦了，去睡吧！」' : '「呃……那 CPU 那個告警後來怎樣了？」'));
     });
   }
-  if (!p) return info('home', '筆電', `Dashboard 一片綠 ✅<br><small>${isWeekend() ? '沒事就去過週末吧。' : '沒事就去休息吧，on-call 也要睡覺。'}</small>`);
+  if (!p) {
+    const items = [];
+    if (!S.lapChg) items.push({ label: `幫筆電接上充電器（剩 ${Math.round(S.lapBat)}%）`, sub: '半夜 page 來的時候才不會沒電', go: () => { S.lapChg = true; note('💻 筆電接上充電器了'); } });
+    if (!S.phoneChg) items.push({ label: `手機也插在書房充電（剩 ${Math.round(S.phoneBat)}%）`, sub: '人在家裡還是聽得到', go: () => { S.phoneChg = true; note('🔌 手機插在書房充電'); } });
+    items.push({ label: '看一下 dashboard', sub: '一片綠 ✅', go: () => {} });
+    return menu('home', '筆電', `筆電 ${Math.round(S.lapBat)}%${S.lapChg ? '（充電中）' : ''}　手機 ${Math.round(S.phoneBat)}%${S.phoneChg ? '（充電中）' : ''}`, items);
+  }
   handlePage();
 }
 /* 處理 page：在書房的筆電，或假日在外面背著的筆電 */
@@ -1017,22 +1115,43 @@ function handlePage() {
   if (p.stage === 'ring') ackPage();
   if (p.stage === 'fixing') return info('home', '處理中', '你已經在處理這個 page 了。');
   p.stage = 'fixing';
+  const out = !!S.outing || !!S.resumeOut;
+  if (S.lapBat < 5 && !S.lapChg) {
+    if (out) { S.lapBat = 40; famChange(-1, '筆電沒電，拉著小雯找有插座的咖啡廳'); return info('page', '筆電沒電了', '背出來的筆電沒電了，只好找一間有插座的咖啡廳。', () => startBusy('talk', COST.findOutlet, '找插座', diagnose)); }
+    S.lapChg = true; S.lapBat = 5; note('💻 筆電沒電，插上充電器等開機', 'b');
+    return info('page', '筆電沒電了', `打開筆電才發現沒電。插上充電器，等它開機（${COST.laptopBoot} 分鐘）。`, () => startBusy('talk', COST.laptopBoot, '等筆電開機', diagnose));
+  }
+  diagnose();
+}
+function diagnose() {
+  const p = S.page; if (!p) return;
+  if (Math.random() < TROUBLE_RATE) {
+    const tr = pick(HOME_TROUBLES);
+    S.troubles.push(tr.text);
+    if (tr.phone) S.phoneBat = Math.max(0, S.phoneBat + tr.phone);
+    note(`😩 ${tr.text}（+${tr.mins} 分鐘）`, 'b');
+    return info('page', '又來了……', esc(tr.text), () => startBusy('talk', tr.mins, '排除狀況', diagnoseNow));
+  }
+  diagnoseNow();
+}
+function diagnoseNow() {
+  const p = S.page; if (!p) return;
   const inc = p.inc;
   runSteps('page', [{ type: 'single', title: `📟 ${inc.title}`, html: `<p>連上 VPN，打開 dashboard：</p><ul class="mono">${inc.data.map(d => `<li>${esc(d)}</li>`).join('')}</ul><p>${inc.fake ? '這要怎麼處理？' : '第一步要做什麼？'}</p>`, opts: inc.opts, a: inc.a, why: inc.why }], res => {
     S.stats.incidents++;
     if (res[0].ok) add(6, `${inc.title}：處理得當`); else add(-6, `${inc.title}：繞了一大圈才搞定`);
     let mins = (inc.fake ? COST.fakeFix : COST.pageFix)[res[0].ok ? 0 : 1];
-    const work = () => startBusy('fix', mins, inc.fake ? '調整告警' : '半夜救火', () => {
+    const work = () => { startBusy('fix', mins, inc.fake ? '調整告警' : '救火中', () => {
       const when = hhmm(p.at);
       const opts = [`「${when} ${inc.title}，已處理完畢，目前服務正常。影響：${inc.fake ? '無（假警報，已調整閾值）' : '部分使用者約 20 分鐘'}。明天追蹤根本原因。」`, '「修好了」', '什麼都不寫，趕快回去睡', '貼一張很長的 log 截圖'];
       runSteps('page', [{ type: 'single', title: '在事故頻道更新狀態：', opts, a: 0, why: '白天的同事醒來第一件事就是看這則。寫清楚時間、影響、目前狀態和後續，他們就不用再叫醒你。' }], r2 => {
         if (r2[0].ok) add(2, '事故頻道更新清楚'); else add(-4, '事故頻道只寫一半，早上大家一頭霧水');
         startBusy('fix', COST.incUpdate, '寫事故更新', () => {
           closePage(res[0].ok ? '已處理' : '處理完（繞了遠路）');
-          toast('處理完了，回去睡吧 😴');
+          toast('處理完了 😮‍💨');
         });
       });
-    });
+    }); S.busy.laptop = true; };
     if (res[0].ok || inc.fake) return work();
     // 判斷錯了、越弄越久：要不要叫醒 secondary？
     runSteps('page', [{ type: 'choice', keep: true, title: '越弄越久，還是找不到原因……', html: `<p>照現在這樣大概還要 ${mins} 分鐘。secondary on-call 是阿凱。</p>`, opts: ['打給阿凱，兩個人一起看', '自己撐下去'] }], r => {
@@ -1113,6 +1232,7 @@ const bestKey = (k, mode) => `dev-sim-best-${k}-${mode}`;
 function bestOf(k, mode) { try { const v = localStorage.getItem(bestKey(k, mode)); return v === null ? null : +v; } catch (e) { return null; } }
 function saveBest(k, mode, v) { try { const b = bestOf(k, mode); if (b === null || v > b) localStorage.setItem(bestKey(k, mode), v); } catch (e) { /* 無痕模式之類的，略過 */ } }
 
+const seg = k => `<div class="seg" role="group">${Object.entries(GENDERS).map(([v, n]) => `<button type="button" data-set="${k}" data-v="${v}" aria-pressed="${SET[k] === v}">${n}</button>`).join('')}</div>`;
 function chooseLevel() {
   S = freshState(LEVELS.freeze, 'day');
   S.tickets = [];
@@ -1129,9 +1249,22 @@ function chooseLevel() {
   }).join('');
   openCard(`<div class="title"><div class="logo">&lt;/&gt;</div><h1>上線不要說應該沒問題</h1><p class="tag">工程師上班模擬</p></div>
     <p class="lead">工程師圈的老迷信：部署前說出「應該沒問題」，當天一定出事。今天請管好你的嘴。</p>
+    <details class="setup"><summary>你和另一半：<b id="setupSum"></b></summary>
+      <div class="setrow"><span>你</span>${seg('me')}</div>
+      <div class="setrow"><span>另一半</span>${seg('pg')}</div>
+      <div class="setrow"><label for="pname">另一半的名字</label><input id="pname" maxlength="8" placeholder="${DEFAULT_PARTNER[SET.pg]}" value="${esc(cleanName(SET.pname))}"></div>
+      <small>晚上 on-call 和假日值班時，另一半會在家。不填名字就用預設的。</small></details>
     <h4>選擇需求變更的頻率</h4><p class="hint">需求改得越兇，白天越難上線，晚上和週末值班也越常被 page。</p><div class="lvs">${lv}</div>
     <p class="fine">非官方、非商業的練習作品。玩法結構參考「值班模擬」類遊戲，內容與程式為獨立製作。　<a href="../../">← 回遊戲目錄</a></p>`);
   card.querySelectorAll('[data-lv]').forEach(b => b.onclick = () => intro(LEVELS[b.dataset.lv], b.dataset.mode));
+  const sum = () => { $('setupSum').textContent = `${GENDERS[SET.me]}・另一半 ${partnerName()}（${GENDERS[SET.pg]}）`; $('pname').placeholder = DEFAULT_PARTNER[SET.pg]; };
+  card.querySelectorAll('[data-set]').forEach(b => b.onclick = () => {
+    SET[b.dataset.set] = b.dataset.v; saveSettings();
+    card.querySelectorAll(`[data-set="${b.dataset.set}"]`).forEach(x => x.setAttribute('aria-pressed', x === b));
+    sum();
+  });
+  $('pname').oninput = e => { SET.pname = cleanName(e.target.value); saveSettings(); sum(); };
+  sum();
 }
 function intro(lv, mode) {
   S = freshState(lv, mode);
@@ -1142,7 +1275,7 @@ function intro(lv, mode) {
     ? `${whoHead('fam')}<h4>週六 00:00，這週末輪到你值班（${lv.name}）</h4>
       <div class="body"><p>${lv.weekend.desc}</p>
       <ul class="rules"><li>值班 24 小時：現在是週五晚上剛過午夜，先去<b>睡覺</b>（半夜一樣可能被 page 叫醒）。週末沒鬧鐘，08:30 自然醒。</li>
-      <li>小雯排了週末計畫：<b>10:30 早午餐、14:00 看電影、17:30 回爸媽家吃飯</b>。她會到沙發問你要不要去。</li>
+      <li>小雯排了週末計畫：<b>10:30 早午餐、14:00 看電影、17:30 回爸媽家吃飯</b>。〔她〕會到沙發問你要不要去。</li>
       <li>出門前要決定：<b>帶不帶筆電</b>？看電影時手機要<b>調震動還是關機</b>？</li>
       <li>在外面 page 響了：有帶筆電就在角落處理，處理完繼續行程；沒帶就只能趕回家。關機的話……就聽不到了。</li>
       <li>page 一樣要 ack、處理、更新事故頻道。週末也會有人傳訊息來「打擾一下」。</li>
@@ -1157,8 +1290,9 @@ function intro(lv, mode) {
       <li>有些是<b>假警報</b>，判斷對了就能很快回去睡。</li>
       <li>${lv.night.line ? '半夜可能有人傳 LINE 改需求。睡前記得想想要不要開勿擾。' : '睡前記得想想手機要不要開勿擾。'}</li>
       <li>生活也要顧：晚餐外送 ${hhmm(TN(20, 40))} 到、洗澡、<b>睡飽</b>。</li>
-      <li><b>另一半小雯</b>也在家：一起吃晚餐、陪看劇會加家人 ❤；半夜 page 響會連她一起吵醒。</li>
-      <li>判斷錯越弄越久時，可以打給 secondary <b>阿凱</b>。07:30 鬧鐘響，08:00 前要開筆電交接給白天的 on-call。</li></ul></div>
+      <li><b>另一半小雯</b>也在家：一起吃晚餐、陪看劇會加家人 ❤；半夜 page 響會連〔她〕一起吵醒。</li>
+      <li>判斷錯越弄越久時，可以打給 secondary <b>阿凱</b>。07:30 鬧鐘響，08:00 前要開筆電交接給白天的 on-call。</li>
+      <li>注意<b>電量</b>：手機沒電就聽不到 page，筆電沒電要插電等開機。睡前決定手機放哪裡充電。處理時也可能碰到 VPN 連不上、強制更新、Wi-Fi 斷線……</li></ul></div>
       <div class="acts"><button class="btn primary" id="go">開始 on-call ▶</button><button class="btn" id="back">換關卡</button></div>`
     : `${whoHead('boss')}<h4>早安，今天的看板（${lv.name}）</h4>
       <div class="body"><ul class="tlist">${S.tickets.map(t => `<li><code>${t.id}</code> ${esc(t.title)} <small>約 ${t.est} 分鐘</small></li>`).join('')}</ul>
@@ -1169,6 +1303,7 @@ function intro(lv, mode) {
       ${lv.urgent ? '<li>⚡ <b>急件</b>會插進來：先去找安娜問清楚範圍，2 小時內要上線。業務會一直打分機來催，每通都會打斷你。急件可以不等部署窗口直接緊急部署，QA 也會先測。</li>' : ''}
       ${lv.big ? `<li>📅 ${hhmm(lv.big.at)} 會來一張<b>明天就要</b>的大單。先跟安娜把範圍砍到 demo 需要的部分；18:00 做不完就得加班，不然 demo 會開天窗。</li>` : ''}
       <li>桌上有<b>分機</b>：找安娜、大衛、小芸可以直接打，不用走過去。分機響了要回座位接。</li>
+      <li>有些單比較<b>重</b>（🐢）：你的電腦、QA 的舊測試機、正式機的舊規格都可能跑不動。</li>
       <li>記得喝咖啡、吃便當（12:00 送到桌上）、上廁所。精神歸零就會趴在鍵盤上。</li></ul></div>
       <div class="acts"><button class="btn primary" id="go">開始上班 ▶</button><button class="btn" id="back">換關卡</button></div>`;
   openCard(body);
@@ -1188,9 +1323,9 @@ function endShift(collapsed) {
 function endDay(collapsed) {
   const left = S.tickets.filter(t => t.status !== 'done');
   const debt = left.length * -5;
-  S.score += debt;
+  left.forEach(t => add(-5, `${t.id} 沒做完，帶回家的技術債`));
   const bigLeft = S.tickets.some(t => t.big && t.status !== 'done');
-  if (bigLeft) { S.score -= 15; note('明天的 demo 要開天窗了（-15）', 'b'); }
+  if (bigLeft) add(-15, '明天的 demo 要開天窗了');
   const total = S.score;
   saveBest(LV.key, 'day', total);
   const rank = collapsed ? ['趴在鍵盤上睡著了', '精神歸零。明天記得喝咖啡、吃午餐。']
@@ -1213,7 +1348,7 @@ function endDay(collapsed) {
     ['QA 退件', `${S.stats.bounces} 次`],
     ['處理事故', `${S.stats.incidents} 件`],
     ['沒做完的單', `${left.length} 張（${debt} 分）`],
-    ['做對／出包', `${S.stats.good} / ${S.stats.bad}`],
+    ['加分／扣分', `${S.stats.good} 次／${S.stats.bad} 次`],
   ], '接著下班 on-call 🌙');
 }
 /* 下班順序和主管印象：印象不算分，只是讓你看看職場怎麼想 */
@@ -1230,10 +1365,10 @@ function leaveRows() {
 function endNight(collapsed) {
   const h = S.sleepMin / 60;
   const sleepPts = Math.max(-18, Math.min(18, Math.round((h - 5) * 6)));
-  S.score += sleepPts;
-  if (!S.ate) S.score -= 5;
-  if (S.page) { S.score -= 10; closePage('沒處理完'); }
-  if (S.pings.rev) { S.score -= 5; S.pings.rev = null; note('沒交接就下線了（-5）', 'b'); }
+  if (sleepPts) add(sleepPts, `今晚睡了 ${dur(S.sleepMin)}`);
+  if (!S.ate) add(-5, '沒吃晚餐');
+  if (S.page) { add(-10, 'page 沒處理完就下線'); closePage('沒處理完'); }
+  if (S.pings.rev) { add(-5, '沒交接就下線了'); S.pings.rev = null; }
   const total = S.score;
   saveBest(LV.key, 'night', total);
   const handled = S.pages.filter(p => p.result.startsWith('已處理') || p.result.startsWith('處理完')).length;
@@ -1251,14 +1386,15 @@ function endNight(collapsed) {
     ['晚餐／洗澡', `${S.ate ? '✓' : '✗（-5）'} ／ ${S.showered ? '✓' : '✗'}`],
     ['家人', `❤ ${S.fam} / ${FAMILY.max}<br><small>${famComment()}</small>`],
     ['同事', `叫醒阿凱 ${S.akai + S.escalated} 次${S.akai + S.escalated ? '（欠他一杯咖啡）' : ''}`],
+    ['手機與筆電', `沒聽到 page ${S.missed} 次${S.troubles.length ? `<br><small>${S.troubles.map(esc).join('<br>')}</small>` : ''}`],
     ['半夜訊息', S.lineLog.length ? S.lineLog.join('<br>') : '沒有回任何訊息'],
   ], '假日值班 🏖');
 }
 function endWeekend(collapsed) {
   const sleepPts = Math.max(-18, Math.min(18, Math.round((S.sleepMin / 60 - 5) * 6)));
-  S.score += sleepPts;
-  if (S.page) { S.score -= 10; closePage('沒處理完'); }
-  if (S.pings.rev) { S.score -= 5; S.pings.rev = null; note('沒交接就下班了（-5）', 'b'); }
+  if (sleepPts) add(sleepPts, `週末睡了 ${dur(S.sleepMin)}`);
+  if (S.page) { add(-10, 'page 沒處理完就下班'); closePage('沒處理完'); }
+  if (S.pings.rev) { add(-5, '沒交接就下班了'); S.pings.rev = null; }
   const total = S.score;
   saveBest(LV.key, 'weekend', total);
   const handled = S.pages.filter(p => /處理/.test(p.result) && !/沒/.test(p.result)).length;
@@ -1275,6 +1411,7 @@ function endWeekend(collapsed) {
     ['週末計畫', S.plans.length ? S.plans.map(p => `${p.label}：${p.result}`).join('<br>') : '一個都沒去'],
     ['家人', `❤ ${S.fam} / ${FAMILY.max}<br><small>${famComment()}</small>`],
     ['同事', `叫醒阿凱 ${S.akai + S.escalated} 次${S.akai + S.escalated ? '（他的週末也毀了）' : ''}`],
+    ['手機與筆電', `沒聽到 page ${S.missed} 次${S.troubles.length ? `<br><small>${S.troubles.map(esc).join('<br>')}</small>` : ''}`],
     ['週末訊息', S.lineLog.length ? S.lineLog.join('<br>') : '沒有回任何訊息'],
   ], '回到白天上班 ☀');
 }
@@ -1285,11 +1422,17 @@ function famComment() {
   if (S.fam >= 3) return '小雯：「下次 on-call 可以不要排週五嗎……」';
   return '小雯已經出門了，冰箱上貼著一張「我們談談」。';
 }
+function ledgerHTML() {
+  const minus = (S.ledger || []).filter(x => x.pts < 0);
+  if (!minus.length) return '<p class="fine">今天沒有被扣任何一分 🎉</p>';
+  return `<details class="ledger"><summary>扣分明細（${minus.length} 筆，共 ${minus.reduce((a, x) => a + x.pts, 0)} 分）</summary><ul>${minus.map(x => `<li><time>${hhmm(x.t)}</time>${esc(x.text.replace(/（[+-]?\d+）$/, ''))}<b>${x.pts}</b></li>`).join('')}</ul></details>`;
+}
 function resultCard(title, total, rank, rows, nextLabel) {
   MODAL = { kind: 'end' };
   openCard(`${whoHead('sys')}<h4>${title}</h4>
     <div class="result"><div class="big">${total}</div><div><b>${rank[0]}</b><br><small>${rank[1]}</small></div></div>
-    <table class="stats">${rows.map(r => `<tr${['需求頻率', '下班順序', '主管印象', '家人', '同事', '半夜訊息', '週末計畫', '週末訊息'].includes(r[0]) ? ' class="txt"' : ''}><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table>
+    <table class="stats">${rows.filter(r => r[0] !== '加分／扣分').concat([['加分／扣分', `${(S.ledger || []).filter(x => x.pts > 0).length} 次／${(S.ledger || []).filter(x => x.pts < 0).length} 次`]]).map(r => `<tr${['需求頻率', '下班順序', '主管印象', '家人', '同事', '半夜訊息', '週末計畫', '週末訊息', '手機與筆電'].includes(r[0]) ? ' class="txt"' : ''}><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</table>
+    ${ledgerHTML()}
     <div class="acts"><button class="btn primary" id="again">再來一次</button><button class="btn" id="other">${nextLabel}</button><button class="btn" id="lvs">換需求頻率</button></div>`);
   const mode = MODE;
   $('again').onclick = () => intro(LV, mode);
@@ -1429,6 +1572,7 @@ function person(x, y, look, opts) {
   ctx.fillStyle = look.hair; ctx.beginPath(); ctx.arc(x, y - 12, 9, Math.PI, 0); ctx.fill();
   if (opts.headphones) { ctx.strokeStyle = '#333'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y - 11, 11, Math.PI * 1.05, Math.PI * 1.95); ctx.stroke(); ctx.fillStyle = '#333'; ctx.fillRect(x - 13, y - 13, 5, 8); ctx.fillRect(x + 8, y - 13, 5, 8); }
   if (opts.glasses) { ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.strokeRect(x - 7, y - 11, 5, 4); ctx.strokeRect(x + 2, y - 11, 5, 4); }
+  if (opts.long) { ctx.fillStyle = look.hair; ctx.fillRect(x - 9, y - 12, 4, 13); ctx.fillRect(x + 5, y - 12, 4, 13); }
 }
 function deskWithScreen(x, y, w, screens, glow) {
   ctx.fillStyle = C.desk; rr(x - w / 2, y - 14, w, 28, 4); ctx.fill();
@@ -1466,7 +1610,7 @@ function island(x, y, n, north, south, glowOf) {
   north.forEach((who, i) => seat(x + i * dw + dw / 2, y - 14, who));
   south.forEach((who, i) => seat(x + i * dw + dw / 2, y + h + 14, who));
 }
-function nameTag(t, x, y) { ctx.font = '700 10px "Noto Sans TC", system-ui, sans-serif'; const w = ctx.measureText(t).width + 10; ctx.fillStyle = 'rgba(255,255,255,.85)'; rr(x - w / 2, y - 7, w, 14, 7); ctx.fill(); text(t, x, y, 10, '#3A4558', 'center', 700); }
+function nameTag(t, x, y) { t = L(t); ctx.font = '700 10px "Noto Sans TC", system-ui, sans-serif'; const w = ctx.measureText(t).width + 10; ctx.fillStyle = 'rgba(255,255,255,.85)'; rr(x - w / 2, y - 7, w, 14, 7); ctx.fill(); text(t, x, y, 10, '#3A4558', 'center', 700); }
 function drawOffice(now) {
   const cw = i => here('c' + i) ? { look: COWORKERS[i % COWORKERS.length] } : null;
   const who = (k, look, opts) => here(k) ? { look, opts } : null;
@@ -1563,8 +1707,8 @@ function drawHome(now) {
   // 小雯
   const spot = partnerSpot();
   if (spot === 'bed') { ctx.fillStyle = '#F0CBA8'; ctx.beginPath(); ctx.arc(136, 64, 10, 0, 7); ctx.fill(); ctx.fillStyle = NPC.fam.hair; ctx.beginPath(); ctx.arc(136, 61, 10, Math.PI, 0); ctx.fill(); }
-  else if (spot === 'table') { person(428, 466, NPC.fam); nameTag('小雯', 428, 496); }
-  else if (spot === 'sofa') { person(775, 96, NPC.fam); nameTag('小雯', 775, 128); }
+  else if (spot === 'table') { person(428, 466, NPC.fam, { long: SET.pg === 'f' }); nameTag('小雯', 428, 496); }
+  else if (spot === 'sofa') { person(775, 96, NPC.fam, { long: SET.pg === 'f' }); nameTag('小雯', 775, 128); }
   // 客廳窗外：晚上是月亮，假日白天是太陽
   if (isWeekend() && S.t >= TW(6, 0) && S.t < TW(19, 0)) { ctx.fillStyle = '#FFD45C'; ctx.beginPath(); ctx.arc(905, 44, 9, 0, 7); ctx.fill(); }
   else { ctx.fillStyle = '#FFF4C2'; ctx.beginPath(); ctx.arc(905, 44, 9, 0, 7); ctx.fill(); ctx.fillStyle = '#F3EEE6'; ctx.beginPath(); ctx.arc(910, 41, 8, 0, 7); ctx.fill(); }
@@ -1620,6 +1764,7 @@ function drawMe(now) {
   ctx.fillStyle = isNight() ? '#56668C' : isWeekend() ? '#4A8A63' : '#1F6E9E'; rr(-12, -3, 24, 7, 4); ctx.fill();
   ctx.fillStyle = '#F0CBA8'; ctx.beginPath(); ctx.arc(0, -11, 9.5, 0, 7); ctx.fill();
   ctx.fillStyle = '#2B2B2B'; ctx.beginPath(); ctx.arc(0, -13, 9.5, Math.PI, 0); ctx.fill();
+  if (SET.me === 'f') { ctx.fillRect(-10, -13, 4, 15); ctx.fillRect(6, -13, 4, 15); }
   ctx.fillStyle = '#2B2B2B'; ctx.fillRect(S.dir > 0 ? 2 : -5, -12, 3, 3);
   ctx.restore();
   if (ringing) pill('📟 page！按 T 接', x, y - 40, '#E5484D', '#fff', 12);
@@ -1692,7 +1837,7 @@ function updateDayPanel() {
   $('boardTitle').textContent = '今日看板';
   $('board').innerHTML = !S.tickets.length ? '<div class="tk-empty">選好關卡後，今天的工作單會出現在這裡</div>' : S.tickets.map(t => {
     const pct = t.status === 'dev' || t.status === 'todo' ? Math.round(t.prog / t.est * 100) : 100;
-    const flag = t.status === 'done' ? '' : t.urgent ? `<div class="due ${t.late ? 'late' : ''}">⚡ ${t.late ? '已超過時限' : `${hhmm(t.due)} 前上線`}</div>` : t.big ? '<div class="due">📅 明天一早要</div>' : '';
+    const flag = (t.heavy && t.status !== 'done' ? `<div class="due heavy">🐢 ${t.lite ? '已做降級' : '現有設備跑不太動'}</div>` : '') + (t.status === 'done' ? '' : t.urgent ? `<div class="due ${t.late ? 'late' : ''}">⚡ ${t.late ? '已超過時限' : `${hhmm(t.due)} 前上線`}</div>` : t.big ? '<div class="due">📅 明天一早要</div>' : '');
     return `<div class="tk s-${t.status}${t.urgent ? ' hot' : ''}${t.big ? ' big' : ''}"><div class="tk-top"><code>${t.id}</code><span class="st">${STATUS[t.status]}</span></div>
       <div class="tk-title">${esc(t.title)}${t.ver > 1 ? ` <span class="ver">v${t.ver}</span>` : ''}${t.pendingChange ? ' <span class="chg">變更中</span>' : ''}</div>
       ${flag}${t.status === 'dev' || t.status === 'todo' ? `<div class="tk-bar"><i style="width:${pct}%"></i></div><div class="tk-sub">${t.prog} / ${t.est} 分鐘</div>` : t.status === 'testing' ? `<div class="tk-sub">預計 ${hhmm(t.qaAt)} 測完</div>` : ''}</div>`;
@@ -1720,8 +1865,9 @@ function updateNightPanel() {
   const life = isWeekend()
     ? `<div class="life"><span class="${S.ate ? 'ok' : ''}">吃飯 ${S.ate ? '✓' : '—'}</span><span class="${S.outing && S.outing.laptop ? 'ok' : ''}">${S.outing ? (S.outing.laptop ? '背著筆電' : '沒帶筆電') : '在家'}</span>${S.plans.map(p => `<span class="${/完成/.test(p.result) ? 'ok' : ''}">${p.label.replace(/出門|去|回/, '')} ${/完成/.test(p.result) ? '✓' : '✗'}</span>`).join('')}`
     : `<div class="life"><span class="${S.ate ? 'ok' : ''}">晚餐 ${S.ate ? '✓' : '—'}</span><span class="${S.showered ? 'ok' : ''}">洗澡 ${S.showered ? '✓' : '—'}</span><span class="${S.sleepMin >= 360 ? 'ok' : ''}">睡眠 ${dur(S.sleepMin)}</span><span>勿擾 ${S.dnd === null ? '—' : S.dnd ? '開' : '關'}</span>`;
-  const life2 = `<span class="${S.fam >= 6 ? 'ok' : ''}">家人 ❤ ${S.fam}/${FAMILY.max}</span><span>叫醒阿凱 ${S.akai + S.escalated}</span></div>`;
-  $('board').innerHTML = life + life2 + (pages || '<div class="tk-empty">目前還沒有 page。希望今晚很平靜。</div>');
+  const life2 = `<span class="${S.fam >= 6 ? 'ok' : ''}">家人 ❤ ${S.fam}/${FAMILY.max}</span><span>叫醒阿凱 ${S.akai + S.escalated}</span>
+    <span class="${S.phoneBat < 20 ? 'low' : ''}">📱 ${Math.round(S.phoneBat)}%${S.phoneChg ? ' ⚡' : ''}</span><span class="${S.lapBat < 20 && !S.lapChg ? 'low' : ''}">💻 ${Math.round(S.lapBat)}%${S.lapChg ? ' ⚡' : ''}</span></div>`;
+  $('board').innerHTML = L(life + life2) + (pages || '<div class="tk-empty">目前還沒有 page。希望今晚很平靜。</div>');
   const todo = [];
   const p = S.page;
   if (p && p.stage === 'ring') todo.push({ u: true, t: `📟 page 響了！按「接 page」或 T（${hhmm(p.dl)} 前）` });
@@ -1734,12 +1880,15 @@ function updateNightPanel() {
   if (isWeekend() && !S.ate && S.t >= TW(11, 30) && !S.outing) todo.push({ u: S.t > TW(13, 30), t: '還沒吃飯（餐桌可以煮麵）' });
   if (isWeekend() && !p && (S.t < TW(6, 0) || S.t > TW(23, 0)) && !(S.busy && S.busy.kind === 'sleep')) todo.push({ u: S.t > TW(1, 0) && S.t < TW(6, 0), t: '該去睡了' });
   if (S.pings.rev) todo.push({ u: true, t: `開筆電交接給白天的 on-call 阿凱（${hhmm(S.pings.rev.dl)} 前）` });
+  if (p && p.stage === 'ring' && cantHearNow()) todo.push({ u: true, t: '（你不知道的是：page 正在響）' });
+  if (S.phoneBat < 20) todo.push({ u: S.phoneBat <= 0, t: S.phoneBat <= 0 ? '📵 手機沒電了！去書房插電' : `🔋 手機剩 ${Math.round(S.phoneBat)}%，記得充電` });
+  if (!S.lapChg && S.lapBat < 20) todo.push({ t: `💻 筆電剩 ${Math.round(S.lapBat)}%，去書房接上充電器` });
   if (partnerSpot() === 'table' && !S.ate && S.delivery.stage !== 'coming') todo.push({ t: '小雯在餐桌等你一起吃' });
   if (S.lines.length) todo.push({ t: `💬 ${S.lines.length} 則訊息未讀（按「手機」或 L）` });
   if (isNight() && !S.showered && S.t > TN(21, 0)) todo.push({ t: '去洗澡' });
   if (isNight() && !p && S.t > TN(23, 0) && !(S.busy && S.busy.kind === 'sleep') && S.t < ALARM) todo.push({ u: S.t > TN(0, 30), t: '該去睡了' });
   if (S.bl >= 70) todo.push({ u: S.bl >= 90, t: '去廁所' });
-  $('todo').innerHTML = todo.length ? todo.map(x => `<li class="${x.u ? 'u' : ''}">${esc(x.t)}</li>`).join('') : '<li class="none">沒事。去休息吧</li>';
+  $('todo').innerHTML = todo.length ? todo.map(x => `<li class="${x.u ? 'u' : ''}">${esc(L(x.t))}</li>`).join('') : '<li class="none">沒事。去休息吧</li>';
 }
 
 /* ================= 啟動 ================= */
