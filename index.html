@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light dark">
+<title>m930406</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f6f5e'/%3E%3Cpath d='M9 22V13l7 6 7-6v9' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #fbfaf8;
+  --fg: #1f2328;
+  --muted: #656d76;
+  --line: #e3e1dc;
+  --accent: #2f6f5e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a;
+    --fg: #e6e8eb;
+    --muted: #9aa3ad;
+    --line: #2c3036;
+    --accent: #7cc4ad;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+}
+main { max-width: 640px; margin: 0 auto; padding: 72px 16px 48px; }
+.eyebrow, h2, footer { font-size: 13px; color: var(--muted); }
+.eyebrow { letter-spacing: .04em; margin: 0 0 8px; }
+h1 { font-size: 30px; line-height: 1.3; font-weight: 650; margin: 0 0 8px; }
+.lede { color: var(--muted); margin: 0 0 48px; }
+h2 { font-weight: 600; letter-spacing: .08em; margin: 0 0 8px; }
+.pages { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.pages li { border-bottom: 1px solid var(--line); }
+.pages a { display: block; padding: 16px 4px; color: inherit; text-decoration: none; border-radius: 6px; }
+.pages a:hover .name { color: var(--accent); }
+.pages a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.name { font-weight: 600; overflow-wrap: anywhere; }
+.kind { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; margin-left: 8px; vertical-align: 2px; white-space: nowrap; }
+.desc { display: block; color: var(--muted); font-size: 15px; margin-top: 2px; }
+footer { margin-top: 56px; }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">m930406.github.io</p>
+  <h1>頁面</h1>
+  <p class="lede">可以公開分享的頁面都放在這裡。</p>
+
+  <h2>目錄</h2>
+  <ul class="pages">
+    <li>
+      <a href="https://github.com/m930406/tg-message-relay">
+        <span class="name">tg-message-relay</span><span class="kind">GitHub</span>
+        <span class="desc">把 FB Messenger、IG、LINE、Discord 的訊息轉到 Telegram，自己架在家裡的電腦上。</span>
+      </a>
+    </li>
+  </ul>
+
+  <footer>以 GitHub Pages 架設</footer>
+</main>
+</body>
+</html>
